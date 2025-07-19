@@ -1,0 +1,371 @@
+Our host server (rtf8-l) is currently down. 
+Our admins are working on solving the problem -- but for now, when you log into 
+remote desktop connection, you won't be able to open sandboxes/run graphs/or do anything on the host. 
+
+We'll have class today as usual -- but obviously no hands-on exercises until they get the server up -- I'll do demonstrations, go over the material, etc. 
+Depending on when the server is up -- we can still try the exercises -- or if not, I'll e-mail the instructions to everyone after class today. 
+
+===================================== 
+
+GDE places little blue dots on some flows ("flow buffers") -- these blue dots are a warning that the graph *might* have to write some/most of the data on those flows to temp files on disk when the graph runs. 
+
+Phase breaks are represented with vertical blue bars -- they tell you that all the data on that flow will be written to a temp file on disk when the graph runs. 
+
+Why do we need flow buffering? Prevents the graph from deadlocking. 
+GDE knows how to identify graph designs that could deadlock -- so it places the flow buffers on the flows where that might occur. 
+Then when the graph runs, the Co>Operating System monitors those flows & if a deadlock starts to occur, it writes some/most of the data on those flows to temp files on disk 
+--> prevents the deadlock from happening 
+
+If we didn't have the flow buffers & you had a design that started to deadlock --> graph would "hang" -- it wouldn't finish but it wouldn't process any more records. It's a timing issue: sometimes the graph might run to completion and other times it would hang. That's one of the most difficult types of problems to debug. 
+
+How do you know that the blue dot in the GDE actually really caused flow buffering when the graph ran? 
+Tracking Details 
+        Buffer -- how much data is buffered to disk right now while the graph is running 
+        Peak Buffer -- maximum amount of data that was on disk for the buffer during 
+                the whole execution ("high water mark") 
+
+So while the graph is running, you can watch "Buffer" to see the data as it is buffered to disk. 
+After the graph is done, you can check "Peak Buffer" to see the max amount of data that was on disk for the buffering. 
+
+Small data flows will never be buffered to disk due to flow buffering -- in addition to the flow buffers on disk, we do have small memory buffers attached to each component. A small amount of data can be stored in memory until the component is ready to process it. 
+
+If we ran the "A" graph with our small data (20 records) --> we would not see any flow buffering to disk because the data is small enough to fit into the memory buffers. 
+
+GDE will always place blue dots on flows that might need flow buffering because the GDE doesn't know how big your data is. GDE is just looking at your graph design -- so it figures if a deadlock might occur as you add components to the graph -- well before you ever run it. We don't know if flow buffering actually occurs until you run the graph --> tracking details to see if the buffering actually occurred. 
+
+=================================== 
+
+In general -- REPLICATE sends a copy of each input record to each output flow. 
+If one of the flows is backed up & cannot accept new records, then replicate doesn't send a record out on *any* of its output flows. 
+Instead, it starts slowing down how fast it takes new input records -- throttling itself until the blocked up output flow can start taking records again. 
+
+=================================== 
+
+We're going to replace JOIN in our graphs with LOOKUP FILE 
+that's going to require us to add a phase break on the transactions flow so that the FILTER component waits until the LOOKUP FILE data is ready. 
+
+This is the exact same flow that was doing flow buffering. 
+Flow buffering --> writes about 95% of the data on the flow to temp files on disk 
+Phase break --> write 100% of the data on the flow to temp file on disk. 
+
+So how could we even think that this would be an improvement? 
+Phase breaks are faster at writing data to disk than flow buffers. 
+Even though it has more data to write -- a phase break will be faster than a flow buffer that writes the majority of its data to disk. 
+For a phase break -- we're just dumping all the output of the previous component to disk in a long stream of data in one file --> very efficient/fast way of writing data to disk. 
+For a flow buffer -- we're trying to minimize how much data is written -- we write a little bit of data to one temp file & we check to see if that fixes the deadlock, if not, then we write a little bit of data to another file & we check to see if that fixes the deadlock -- this back & forth is more time consuming than dumping all the data in one long stream. 
+
+
+=================================== 
+
+I've got a LOOKUP FILE that has 1 record in it, thus can have an empty key: 
+        { } 
+
+Now I want to call lookup() function to return the record in that lookup. 
+        lookup("Avg Purchases Lookup") 
+
+
+What is the data type of the value that this function call returns? 
+        lookup("Avg Purchases Lookup") ---> record (collection of fields) 
+
+If want to return the avg_purchases value from the lookup: 
+        lookup("Avg Purchases Lookup").avg_purchases 
+
+
+===================================== 
+
+Any transform package that you write in any component can have both global & local variables. 
+Global variables are declared outside all the functions in the package. 
+You can declare local variables inside any of the functions in the package. 
+
+In our "A" graph 
+        we could create a local variable but that won't help us to optimize the performance 
+        because if we used a local variable, we would still be doing the lookup once for 
+        each input record --> local variable is reinitialized once per input record. 
+
+        so we need a global variable where we can do the lookup once before any 
+        records are processed and then simply reference the global variable for each input 
+        record 
+
+If you have a lookup that has more than 1 record --> now that's a completely different design. Now you might have a situation where each input record would be accessing a different record from the lookup 
+        --> use a local variable 
+
+======================================= 
+
+When is the global variable in the FILTER BY EXPRESSION component initialized? 
+Remember that the FILTER is in phase 1. 
+Global variable is initialized at the start of phase 1 but before the FILTER begins processing any records. 
+
+In general -- 
+        global variables are initialized when the component begins running (at the start of 
+        the phase that the component is in) 
+        but before any records are read by the component. 
+
+======================================== 
+
+When a phase starts execution 
+--> first we start an operating system (Unix, Linux, Windows,etc.) process for each partition of each component in that phase 
+--> each component process initializes itself 
+        -- compiles its record format & transform (if it has them) 
+        -- validates the syntax for the record format & transform at that time 
+        -- initializes any global variables 
+--> then the first component(s) in the phase start reading data from the inputs to the phase (input files, input tables, phase breaks, etc.) 
+
+========================================= 
+
+We strongly recommend that you avoid placing phase breaks right before or right after a SORT that spills to disk. 
+Example: in A graph, we have SORT ---|phase break---> 
+        SORT component spills all its input data to disk 110 MB 
+        there's no output until the sort is finished sorting all the data 
+
+        All that data is then rewritten to disk at the phase break 110 MB 
+        phase break breaks the pipeline parallelism as well. 
+
+        220 MB of data are written to disk & we break the pipeline parallelism (stream of 
+        data) twice. 
+        --> very inefficient 
+
+CHECKPOINTED SORT uses the same temp files as both the spillage files AND the phase break. Data is written to disk & the pipeline parallelism is broken *only once*. 
+        110 MB of data to disk & we break the pipeline parallelism only once 
+        AND part of the sorting algorithm happens in phase 0 so we also get back 
+        some of our component parallelism as well. 
+
+
+Is it always better to use CHECKPOINTED SORT rather than SORT? 
+If that's the case, why would we even have SORT component? 
+You use CHECKPOINTED SORT *only* if you have phasing in your graph & you need to place the phase break at the sort component. 
+If you just always use CHECKPOINTED SORT then you would be adding phasing to graphs that don't need it. 
+
+CHECKPOINTED SORT is not faster at sorting than SORT -- they use the same algorithm. 
+
+Use SORT most of the time. 
+Use CHECKPOINTED SORT *only* when you have a requirement that you need a phase break right before or right after SORT component. 
+
+Adding CHECKPOINTED SORT to a graph always adds a phase --> if you don't need that phase, then you're making your graph slower. 
+
+============================================ 
+
+With our current data -- all our solutions get about the same performance 
+        flow buffering 
+        SORT with component parallelism, drawback phase break 
+        putting sort in later phase, drawback of less component parallelism 
+        using CHECKPOINTED SORT, improves component parallelism somewhat 
+All get about the same performance on our data 
+        4.3 GB of transactions (50 million) 
+        110 MB of customers (1 million) 
+
+
+If we had more customers --> flow buffering & phase break solutions would be worse. 
+Or if we were running on a server with a very slow disk --> flow buffering + phase break solutions would be worse. 
+
+==================================================== 
+
+Can we compare two copies of the same graph on two different unix servers? 
+Yes - if you have access to both servers from some location. 
+If you have a login to a server that has access to both... 
+
+air sandbox diff   //server1/path/to/first/graph  //server2/path/to/second/graph 
+
+Ab Initio command-line commands can almost always refer to files on different servers by simply specify //server-name, followed by the path on that server. 
+
+===================================================== 
+
+If you have a ROLLUP with an empty key { } 
+then it produces one output record when it runs in serial ($AI_SERIAL layout). 
+
+If you run that ROLLUP in parallel (e.g., with $AI_MFS layout) then you get one output record per partition. 
+Our MFS is 2-ways parallel -- our ROLLUP would produce 2 outputs records -- one that had the average purchases for customers in partition 0 & the other that had the average purchases for customers in partition1. Both those values will be incorrect! 
+
+
+========================================== 
+
+One suggestion replace 
+        PARTITION BY KEY + SORT (separate components) 
+with 
+        PARTITION BY KEY AND SORT (one component) 
+
+This is a very common misconception -- so common that we are deprecating PARTITION BY KEY AND SORT and removing it completely from Ab Initio. 
+
+PARTITION BY KEY AND SORT --> internally is exactly the same (performance, results, etc.) as using the two separate components. 
+There is absolutely no performance benefit whatsoever from using PARTITION BY KEY AND SORT. 
+In many graphs it actually forces you into suboptimal graph design where you end up doing extra sorting. 
+
+=========================================== 
+
+What's the performance advantage of using data parallelism? 
+It splits the data up into smaller subsets & it processes those subsets concurrently. 
+Rather than processing 1 record at a time, we can process 2 or 4 or 6 or 8 --- whatever your degree of parallelism is -- at the same time. 
+If we go from serial to 2-ways parallel --> graph will be about twice as fast. 
+The improvement comes from how fast we can process the data. 
+
+There are other things in the graph design that also take time -- like starting up & initializing the components. In order to get data parallelism, we often have to add components like partitioning & departitioning components = more work as well. 
+
+Benefit from data parallelism comes only when you have big data --> significant improvement in processing time outweighs the cost of starting up extra processes + partitioning & departitioning. 
+
+When you have big data in a component --> that component will benefit the *most* from using data parallelism. 
+Components that process a small amount of data don't benefit much from using data parallelism. 
+
+
+Make sure in your graph design that the components that process the biggest data are the ones that run in parallel 
+--> usually you need to partition the data (if it isn't partitioned already) right at the beginning -- immediately after your inputs -- because in most graphs, that's when the data is the biggest. 
+
+
+=================================== 
+
+We partition by round-robin, then filter the data + reformat the key values, then repartition by key. 
+Isn't repartitioning the data expensive? 
+Not really 
+(1) It runs in parallel. Repartitioning happens in parallel --> very fast 
+(2) It pipelines. Components after it don't have to wait for data. 
+In terms of overall runtime for the graph, it's not a big drawback. 
+
+A much bigger drawback would be to run components that process big data in serial rather than repartitioning. 
+
+Just like anything -- we don't want to repartition when we don't need it. 
+If you've heard people say "avoid repartitioning" --> avoid it when you don't need it. There is a tendency for new developers to repartition a lot more often than they need to. 
+
+
+======================================== 
+
+How to take care of problems using next_in_sequence() in parallel component? 
+Each partition of the component starts its own sequence. 
+
+Solution: use the partition numbers to create a unique sequence for each partition. 
+ (next_in_sequence() * number_of_partitions()) + 
+     this_partition() – 
+     (number_of_partitions() – 1) 
+
+
+Or: use the component in serial. 
+
+============================================ 
+
+The most difficult double ROLLUPs are the ones that use count (or average = sum / count) 
+because in the second ROLLUP you have to remember that you need to sum the counts -- not just count the records. 
+
+All other double ROLLUPs are easy... 
+        you can do max(in.max_p) --> that works 
+        similarly for min, etc. 
+        you can sum(in.sum_p) --> that works. 
+
+Only for count... 
+        sum(in.count_p) --> this is correct 
+
+
+
+Double ROLLUP is used in a few situations: 
+(In a double ROLLUP: both ROLLUP components uses the same key -- either empty key (1st situation) or a key that the data is skewed on (2nd situation)): 
+
+1- Used for situations where you want to do a "global ROLLUP" --> rollup with empty key that has large input data. Idea: enables you to process the large input data in parallel, then do a second rollup to combine the results from each partition. 
+
+2- When your input data is skewed on the key that you need to rollup on. 
+Let's say that you want to do a Rollup on {customer_id} but the data is heavily skewed on customer_id so that when you partition on customer_id, you get a lot of records in one partition and not many records in the others (= "skew" --> because you have to wait for the big partition to finish, the performance is not as good as it could be) 
+Partition by Round-Robin --> First Rollup --> Repartition by Key (or go serial) --> Second Rollup 
+First rollup reduces the size of the data by aggregating it -- then you can go serial (if the data is small) or repartition (the skew will come back but performance effect won't be as bad because the data is smaller). 
+
+Double ROLLUP : rolling up on the same key twice (two separate rollup components) 
+        general principle: first rollup runs on big data but reduces the size of the data 
+                so that the second rollup can run efficiently in serial or with skewed 
+                input data. 
+
+
+================================================== 
+
+When your data is skewed on a particular key -- for example, store_no. 
+If you use PARTITION BY KEY {store-no} 
+        you'll get a lot of records on one partition and not as many on the others (skew) 
+
+If you PARTITION BY ROUND-ROBIN --> no skew 
+        divides the partitions evenly. 
+
+
+Highly suggest that you review the parallel graph design lessons in the computer-based training. 
+It talks about all these techniques. 
+In the GDE 
+        Help > Training > Graph Development Basics 
+
+Expand "Graph Development Basics" topic in the Help --> shows a list of all the lessons. 
+        Partitioning (talks about how Partition by Key & Partition by Round-Robin work) 
+        Departitioning (talks about Merge & Gather) 
+        Repartitioning (talks about how all-to-all flows work) 
+        Layouts & Flows (more information about how layouts and different types of 
+                        flows work: fan-in, fan-out, all-to-all) 
+        Data Parallel Graph Design (skew, double rollup, how to choose best key for 
+                        partitioning your data with Partition by Key) 
+
+
+You all have access to your accounts on the training server until August 31 2014. 
+You can log into the rtf.abinitio.com remote desktop at any time from anywhere. 
+If you need access after August, you can request to have your account access extended (will send instructions on how to do that on Friday) 
+
+============================= 
+
+
+Our optimizations (record formats + using data parallelism) made the graph 
+        4x faster for run time 
+        but only 2x less CPU time (half as much CPU as original) 
+
+Why isn't the CPU time 4x less as well? Why is it only half as much -- shouldn't it be much less CPU time in the optimized graph? 
+
+Run time : how fast the graph runs, the time from when you start the graph to when it finishes 
+CPU time: how much work the graph does (how much CPU resources the graph uses) 
+
+When we optimize the record formats, the graph is doing less work 
+        CPU time goes down 
+        --> runtime goes down as well 
+
+When we use data parallelism, the graph is still doing the same amount of work -- it's still doing the same operations on the same amount of data, we've simply got more CPUs to share the work. (In fact, it's actually slightly more CPU time because we did have to add partitioning & departitioning components.) 
+        CPU time stays about the same 
+        --> but the runtime goes down significantly because now we've split the work 
+                across more CPUs 
+
+If I have to shovel a ton of dirt into my garden --> it takes me 5 hours. 
+If I ask a friend to help me, there's still the same amount of work (ton of dirt) --> but now it only takes 2-1/2 hours. 
+This is how data parallelism works. 
+
+Record format optimizations made the graph use half as much CPU time & half as much runtime. 
+Data parallelism made the graph use half as much runtime again, but the CPU time stayed about the same. 
+
+==================================================== 
+
+We have about 10 minutes left & not quite enough time to start the next topics. 
+Open questions -- anything you want to ask. If you had a parallelism question and I didn't answer it -- ask again now. 
+Or if you want to go early, that's good too. 
+
+
+Same graph + same version 
+        showed different sizes when you did an "air ls" command. 
+        in two different environments 
+
+        Possibilities: 
+        double-check that the versions are the same 
+        two graphs with the same version # in different environments are not the same 
+        version; each environment has its own version #s; you would want to look at 
+        tags. 
+
+        possible that the tags are wrong -- two different versions got tagged with same 
+        tag. check-out from each environment and use "air sandbox diff" to verify that 
+        there are no changes. 
+
+        possible that two envs are using diff versions of the Co>Operating System 
+        EMEs have different storage formats --> files use different amounts of space 
+        for the same information 
+                air repository show -storage-format 
+
+        if you check all these things & the size diff still doesn't make sense, 
+                send an e-mail to support@abinitio.com with all your evidence 
+                just let them know what customer you're working for 
+
+
+============================ 
+
+Tomorrow: 
+        vector types 
+        block expressions 
+        statements versus expressions 
+        looping expression 
+        vector functions 
+        user-defined functions (if we have time -- at least a demonstration) 
+
+--- 
+Rebecca Buchheit Clayton
+Ab Initio Software

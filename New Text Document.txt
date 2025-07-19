@@ -1,0 +1,113 @@
+Hi folks: 
+
+The great thing about the following exercises is that you can do them from any GDE -- you don't need any special input data or to be on the rtf.abinitio.com training server. So, go ahead & give them a try. Let me know if you have any questions! 
+
+
+Working with expressions 
+Open a new graph in the GDE. 
+Create a graph parameter named SORT_DATA as shown. 
+ 
+
+Create another graph parameter named DO_SORT. 
+In the parameter Attributes, set the Interpretation to PDL. This enables you to compute the value using a DML expression. 
+Set the value of this parameter to: 
+$[ if (SORT_DATA == "Yes") 1 else 0 ] 
+
+The $[ ] syntax indicates that the expression inside should be evaluated just as if it were an expression used in a transform. 
+What happens if you change the value of SORT_DATA to No and then remove the else-clause of the if-expression? 
+
+
+Block expressions -- block expressions are a special type of expression. They enable you to use statements and declare local variables to compute an expression value. Block expressions always have a return value, which is designated by the last line result :: <value>. 
+Open a new graph in the GDE. 
+Create a graph parameter named SHIFT. 
+In the parameter Attributes, set the Interpretation to PDL. 
+Click the Edit pencil and set the parameter Value to: 
+$[ begin 
+    let hour = datetime_hour(now()); 
+    result :: if (hour >= 6 and hour < 12) "day" 
+              else if (hour >= 12 and hour < 22) "swing" 
+              else "night"; 
+end ] 
+
+
+Index for loop expressions 
+Open a new graph. 
+Add a FILTER BY EXPRESSION component to the graph. 
+Edit the select_expr parameter so that the Expression Editor opens. 
+Press F8 to show the Evaluate DML pane. 
+Type in this index for loop expression, and then press Enter to evaluate it. 
+        for (let i, i < 26) : char_string(i + 65); 
+Write an index for loop expression that produces this vector as a result: 
+        [vector 100, 200, 300, 400, 500 ] 
+
+
+Element for loop expression 
+Use the graph from the previous quick exercise. 
+Type this element for loop expression as a single line in the Evaluate DML pane, then press Enter to evaluate it. 
+for (let name in string_split("ROMEO,JULIET,TYBALT", ",")) : string_downcase(name); 
+
+
+Using if-else expressions in a loop 
+Use the graph from the previous quick exercise. 
+Add a FILTER BY EXPRESSION component, open the Expression Editor, and show the Evaluate DML pane. 
+Evaluate each of these two expressions. How are the result vectors different? 
+for (let t in [vector 15, -5, 37, 21, -7, 0]) : if (t > 0) t; 
+for (let t in [vector 15, -5, 37, 21, -7, 0]) : if (t > 0) t else -99; 
+
+
+While loop expressions 
+Use the graph from the previous quick exercise. 
+Type this block expression as a single line in the Evaluate DML pane, then press Enter to evaluate it. 
+begin 
+    let i = 0; 
+    result :: while (i < 20) i = i + 2; : i; 
+end 
+
+
+For loop statements -- regular for loops like you have in other programming languages. Don't need to use/compute vectors. 
+Use the graph from the previous quick exercise. 
+The Evaluate DML utility only evaluates expressions. To test a statement, you'll need to enclose it within a block expression. 
+Type this block expression as a single line in the Evaluate DML pane, then press Enter to evaluate it. 
+begin 
+   let fact = 1; 
+   for (let i, i < 5) fact = fact * (i+1); 
+   result :: fact; 
+end 
+
+
+More loops 
+Write a loop expression that takes the following input vector: 
+        [vector "Abigail", "Beth", "Anne", "Sarah"] 
+and returns a new vector with the following values: 
+        [vector "Abigail", "Anne"]   (only names that start with the letter "A") 
+
+
+Vector functions 
+Use the Help Library (and test with Evaluate Expression option in Expression Editor) to find the correct vector functions. 
+Your first input vector has the values [vector "Ann", "Carol", "Enid"] 
+Your second input vector has the values [vector "Beth", "Enid", "Diane"] 
+
+1- Which vector function, using the two input vectors above as input arguments, returns the result: 
+[vector "Anne", "Carol", "Enid", "Beth", "Enid", "Diane" ] 
+
+2- Which vector function, using the two input vectors above as input arguments, returns the result: 
+[vector "Enid"] 
+
+3- Which vector function, using the two input vectors above as input arguments, returns the result: 
+[vector "Carol", "Enid", "Diane", "Anne", "Beth"] --> elements in the vector may be in a different order than shown here 
+
+4- Which vector function, using the two input vectors above as input arguments, returns the result: 
+[vector "Carol", "Anne"] 
+
+5- Why can't we properly use the vector_merge() function on these two vectors? What vector function would we have to apply first, in order to get the result: 
+[vector "Anne", "Beth", "Carol", "Diane", "Enid", "Enid"] 
+
+
+Warm regards, 
+Becky 
+--- 
+Rebecca Buchheit Clayton
+Ab Initio Software
+
+
+rbuchheit@ABINITIO.COM

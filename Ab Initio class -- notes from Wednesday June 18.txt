@@ -1,0 +1,428 @@
+REDEFINE FORMAT does *not* do automatic type conversion because it doesn't have a transform. 
+
+REDEFINE FORMAT does nothing except parse its input data. The only way that REDEFINE FORMAT can fail is if its *input* data does not match the structure of the record format on its *in* port. 
+
+Why we have REDEFINE FORMAT is that -- due to how record format propagation works, you can't just do this: 
+FILTER out (dml format X) ----> (dml format Y) in SORT 
+This fails & you cannot even try to run the graph. You cannot have two ports that are connected by a flow that have different record format. 
+
+
+REDEFINE enables you to make the flow connections so that the scenario above can work. 
+FILTER out (dml format X) ---->(dml format X) in REDEFINE FORMAT out (dml format Y)----> (dml format Y) in SORT 
+Now -- we are following the rules -- every port that is connected by a flow shares the same record format, but we're able to switch from record format X to record format Y. 
+
+You can also switch from record format X to record format Y using a transform component (like REFORMAT). 
+Difference between REDEFINE & REFORMAT 
+        --> REDEFINE is faster 
+                if you don't need to modify the data in any way, you just want to 
+                change the record format --> this is the component to use 
+
+
+So let's say that we have a record format like this in the *in* port of REDEFINE: 
+record 
+        string("|") letter; 
+        decimal("|") number; 
+end 
+
+and on the *out* port of REDEFINE (shared with the component after the REDEFINE), we have this: 
+record 
+        string("|") value; 
+end 
+
+How can a string field read decimal data? 
+Decimals are strings. A decimal value in the raw data is simply a character that contains one or more numeric digits. 
+The value "1" can be a decimal because it is a numeric digit. 
+But it can also be a string -- because any character can be read as a string. 
+
+This works for dates too. 
+The value "20141231" 
+        can be a string -- because it's just characters 
+        can be a decimal -- because it's just numeric digits 
+        can be a date -- because it has a valid date format YYYYMMDD 
+Doesn't require automatic type conversion to switch from one of these types to the other (for example, in a REDEFINE FORMAT) because the raw data is not being modified in any way. We're just changing what character-based type we assign to the value. This particular value can be read as any of those. 
+
+
+Here's what we can't do: 
+in port format like this for REDEFINE FORMAT 
+record 
+        decimal(4) value; 
+end 
+
+out port format for REDEFINE FORMAT 
+record 
+        integer(4) value; 
+end 
+
+Why can't I do that? 
+If I have the value "1234" in my input byte stream, then what I have in the raw data is the bytes \48 \49 \50 \51 --> map to the characters "1" "2" "3" "4". 
+If I want to represent the value 1234 as an integer, then I need to change the raw bytes to an binary representation of the value 1234 which is 0000010011010010 (in bits) 
+Converting from decimal --> integer requires changing the raw data --> REDEFINE FORMAT can't do that because it doesn't have a transform and can't do automatic type conversion. 
+
+==================================================== 
+
+Let's say that I have input data like this: 
+A|B|C|D| 
+
+And I have an *in* record format like this: 
+record 
+ string("|") field1 = NULL; 
+ string("|") field2 = ""; 
+ string("|") field3 = NULL(""); 
+end 
+
+What happens when a component tries to parse that data using this format? 
+Fails -- error message will say that your record format doesn't match your data either because your data is corrupted or because the record format is wrong. 
+"Incomplete record at end of file" 
+
+The fact that these fields are nullable or have defaults doesn't help you. Because those things only get activated when you're in the transform of the component & you are assigning values to the *OUTPUT* fields. 
+Parsing the input data happens *before* you start the transform. (Think about components, like SORT, that don't even have a transform.) 
+
+When we parse the input data 
+record 1 
+        field1 = "A"        field2 = "B"        field3 = "C"   [complete record] 
+record 2 
+        field1 = "D"         and then we run out of data 
+
+The component fails with this error "Incomplete record at end of file" 
+        because record 2 is missing field2 and field3 
+
+This is good that it fails the graph -- you don't want to run a graph with corrupted data. Data that is incomplete or problematic in some way. 
+
+However -- if you have issues where your data often arrives in a corrupted state -- we have ways to fix that. 
+1- You can read the data with a component that has a "repair_input()" function in its package. If you're working with Continuous Flows graphs -- all our Subscribers have the ability to try to fix the data for you -- you write this repair_input() function to do that. 
+or 
+2- Read the data using a very flexible record format: 
+        in the case above, I would probably use 
+        record 
+                string("|") value; 
+        end 
+
+        or I might use: 
+        record 
+                string(1) value; 
+        end 
+
+        another common one is: 
+        record 
+                string("\n") line; 
+        end; // works for newline delimited data 
+
+then you use REFORMAT to redefine the data as your correct record format using the reinterpret_as() function. 
+If reinterpret_as() cannot reinterpret the input data using the record format that you're asking for, it returns a NULL value --> you can use the transform in REFORMAT to either repair the record or reject it without failing the graph. 
+
+the reinterpret() and reinterpret_as() functions basically are functions that you can use in a transform that do exactly the same thing that REDEFINE FORMAT component does 
+--> takes a set of bytes and applies a different record format to them. 
+
+The reinterpret_as() function cannot drop raw bytes. 
+You can redefine certain bytes to more fields or fewer fields, but you can't remove the bytes. 
+All the bytes have to be assigned to a field. 
+
+=============================================== 
+
+This is REFORMAT 
+        in port 
+        record 
+                string(5) field1; 
+                string(5) field2; 
+                string(5) field3; 
+        end 
+
+        out port 
+        record 
+                string(5) field1; 
+        end 
+We dropped field2 and field3 from the data. 
+In the input, each record was 15 bytes. In the output, each record is now 5 bytes. 
+If the input data had 10 records: 150 bytes input ---> 50 bytes output 
+We changed the byte stream. 
+
+
+This is REDEFINE FORMAT 
+        in port 
+        record 
+                string(5) field1; 
+                string(5) field2; 
+                string(5) field3; 
+        end 
+
+        out port 
+        record 
+                string(5) field1; 
+        end 
+In the input, each record was 15 bytes. In the output, each record is now 5 bytes. 
+If the input data has 10 records: 150 bytes input 
+        now the output data has 30 records: 150 bytes output 
+We didn't drop any data -- all the data is still there -- it's just that 3 fields in one record have now been redefined to 1 field in 3 records. 
+
+=============================================== 
+
+The way that we write Excel spreadsheets in Ab Initio using WRITE EXCEL 
+is basically that you don't write separate columns -- you write a single line that is tab delimited -- you need to have all your fields in a single line, fields are separated by tabs. 
+Using REDEFINE FORMAT + WRITE EXCEL is really common. 
+
+If your input data looked like this: 
+        record 
+                string("\t") name; 
+                string("\t") address; 
+                string("\n") some_other; 
+        end 
+
+Then you can just REDEFINE to this in preparation for WRITE EXCEL: 
+        record 
+                string("\n") line; 
+        end 
+
+Your data in the "line" field would look like this: 
+Jane        123 Elm St.        Here are some comments 
+Sally        1 A St.        Here are some more comments. 
+
+==================================================== 
+
+Using a conditional record format is slow -- it causes the components to spend a lot of time parsing their input data. 
+CUSTOMER data has a conditional record format. 
+We've already filtered the customer data so that the Header and Trailer records have been dropped. Now, our data flow contains only Detail records. 
+Now we'd like to use a component (either REDEFINE FORMAT or REFORMAT) to remove the conditions from the record format so that the rest of the components in the graph get better performance. 
+
+Which component should we use for the CUSTOMER data? 
+We could use either one. 
+We're not dropping any fields (we need all of them to do the Join) 
+The cust_id field is already an integer in the data source (so no need to convert from decimal to integer) 
+--> REDEFINE FORMAT makes more sense. 
+
+
+For the TRANSACT data -- we wanted to convert the customer_id and trans_date fields to integers and we wanted to drop a bunch of fields that we didn't need in the graph. 
+--> REFORMAT was the right choice there. 
+
+=========================================================== 
+
+I have 40 input fields and I only need to transform 5 of them; the other 35 are just written to the output. We call those "carry through" fields. 
+
+I could redefine my record format like this: 
+record 
+   string("\x01") field1; 
+   string("\x01") field2; 
+   string("\x01") field3; 
+   string("\x01") field4; 
+   string("\x01") field5; 
+   string("\n") rest_of_the_data; 
+end 
+
+Then at the end of the graph, I could redefine back to the original 40 fields before loading into a table or writing to a file. 
+
+This will not improve performance really in any noticeable way. 
+When we had 40 fields, we had to search each character in the record looking for \x01 delimiters to know where each field ended. 
+When we have 6 fields (5 + 1 big field), we still have to search each character in the record, but now we're just looking for the newline at the end. 
+We've still got delimited data --> we've still got to look at each character in the raw data to see if its the delimiter.
+
+*But* if we redefine as 6 fields (5 + 1 "carry through" field) and then we reformat the carry through field to be a varstring instead of delimiter --> big improvement in performance. 
+
+Then reformat to this: 
+record 
+   string("\x01") field1; 
+   string("\x01") field2; 
+   string("\x01") field3; 
+   string("\x01") field4; 
+   string("\x01") field5; 
+   string(integer(4)) rest_of_the_data; 
+end 
+
+When we get to the start of the "rest_of_the_data" field -- we can read the prefix and just skip ahead that many bytes to get to the next record -- *without* having to read each character individually searching for a delimiter. 
+--> faster! 
+
+The number of fields doesn't really matter. 
+The important thing in parsing the input data is: 
+-- do we need to look at every character to find delimiters? (slow) 
+-- or can we "skip ahead" because we know the length of the string either because it's fixed-length or varstring. (fast) 
+
+It's up to you to figure out which fields are not needed in the components in the graph and reformat those as carry through fields. 
+Only a performance benefit when you have a lot of extra fields that are long, delimited values. 
+(redefine --> reformat ---> rest of the graph --> reformat --> redefine back to the original format = a lot of work) 
+
+[Example above works only if the "carry through" fields are next to each other in the record format and that they're at the end of the record format where the newline is. 
+If they're aren't --> REFORMAT first to move the fields --> REDEFINE --> REFORMAT as varstring.  = More work, would want to test this to make sure that it's a benefit overall.] 
+
+=========================== 
+
+What does the TRASH component do? 
+Throws away the input data. (Technically -- it writes the data to /dev/null.) 
+
+What does every component in Ab Initio do? 
+Parses its input data. 
+
+TRASH component parses its input data. 
+CPU time for the Trash component is how much work it is to parse the input data, given your record format. 
+
+If you want to test the performance difference of two different record formats (how long it takes to parse them), TRASH is great to use because that's all it does! 
+
+
+==================================== 
+
+integer(1) --> char 
+integer(2) --> short 
+integer(4) --> int 
+integer(8) --> long 
+
+string(long) my_field; 
+that's just a shortcut for 
+        string(integer(8)) my_field; 
+
+
+======================================== 
+
+Validation warnings that we're getting about record formats being in a .dml file rather than embedded are just that -- recommendations for best practices. 
+
+This doesn't come from using a particular version of the GDE. 
+It's not the GDE that's doing this sort of validation. 
+
+We have a special file in our sandbox that defines additional validation tests that the GDE should run (that are actually done by the Co>Operating System) for each graph. 
+
+In our xfr/vld folder in our sandbox, we have a file 
+        validations.act --> Activation file 
+        ($AB_HOME/examples/validation/validations.act) 
+It refers to $AB_HOME/Projects/root/xfr/vld/validations.xfr 
+        which contains a bunch of functions that are written using our validation 
+        extension language 
+
+Both these files -- validations.act and validations.xfr -- are provided by the Co>Operating System. 
+So if you want to use these for a particular project, you just copy validations.act 
+        into xfr/vld directory in your sandbox 
+and then it just works. 
+You can comment out tests that you don't want to use. 
+You can create your own validation extension functions and add them to the activation list. 
+
+Became available in version 3.0.x??? And is definitely available in V3.1. 
+
+======================================================== 
+
+If you want to know more about validation extensions -- how to write them yourself: 
+        search Help Library for "validation extensions" 
+
+========================================================= 
+
+The in-memory JOIN and in-memory ROLLUP components *DO NOT* sort their data. 
+A lot of people will say "rollup with internal sort" --> that is wrong. That is confusing terminology because in-memory ROLLUP doesn't sort. 
+
+Sorting is slow. In-memory Rollup and in-memory Join build hash tables --> that is much faster than sorting. 
+It doesn't make sense that in-memory Rollup and in-memory Join would internally sort their data because their output data is unsorted. Why would we internally sort the data and then unsort it in the output? That doesn't sound very smart. 
+
+
+A common question is whether to use SORT component or whether to use in-memory Rollup. 
+In most cases, in-memory Rollup is better because it doesn't sort the data. 
+        --> faster 
+        --> uses less memory than sort does: less likely to write data to disk = faster 
+
+What if we have really large data? 
+So what. The size of the input data for in-memory Rollup is completely irrelevant to the amount of memory that the in-memory Rollup uses. 
+The amount of memory required by in-memory Rollup depends entirely on the record format of the output port + the temporary_types that are used internally by the Rollup + data type for the key fields on the in port. 
+
+Let's say that you have 100 billion input records, 1 TB of input data. 
+And your Rollup key is {us_state} 
+There are only 50 states in the US --> amount of memory required by in-memory Rollup is space to keep track of 50 different values. That's it. 
+
+Let's say that you have 100 billion input records, 1 TB of input data 
+and your Rollup key is {acct_id} and there are 10 billion accounts. 
+Now your Rollup has to store 10 billion different values in memory -- that's a lot of data. If each key needs a few bytes for the key + whatever values we're computing (sum, count, etc.) then you might easily need 100 billion bytes in memory = 100 GB --> much much bigger than max-core. 
+Rollup will definitely spill to disk (a lot of data --> disk) 
+
+
+If the size of your output data from in-memory Rollup is less than its max-core, you're almost always better off using in-memory Rollup rather than sorting the data. 
+If the size of your output data from in-memory Rollup is much bigger than its max-core, you're almost always better of using Sort. (If you have to write a lot of data to disk, Sort is faster at that than Rollup because Sort has a simpler algorithm.) 
+If you're somewhere in the middle, test both & see which is faster. 
+
+
+Number of records or fields that you have doesn't matter. 
+It's the actual size in bytes that matters --> compared to the max-core value. 
+
+What about increasing the value of max-core? 
+You can but you have to be very very very careful. 
+If you increase the value of max-core too high -- such that your server runs out of physical RAM and has to start swapping 
+--> swapping in the OS is much much slower than having one of our components spill data to disk.. 
+The OS has no idea what our components are doing --> swaps a little bit of data from memory to disk at a time. 
+Our components know their own internal algorithms --> spill a huge amount of data to disk at once, very quickly and they can arrange it on disk in a way that is efficient for our algorithms. 
+
+
+What about in-memory JOIN? 
+In-memory JOIN loads all records from its *nondriving* ports into memory and then creates an index of the keys. (Very similar to what lookup file does.) 
+One of the ports in the in-memory JOIN is called the "driving" port -- specify which port is the driving port using "driving" parameter in the Join. (All the other ports are called "nondriving" ports.) 
+
+If the nondriving data + index fits into the memory allowed by max-core, then the Join doesn't write any data to disk. (Similarly for in-memory Rollup -- if the keys + aggregation values for each fit into memory allowed by max-core, then the Rollup doesn't write any data to disk.) 
+
+If the nondriving data does *not* fit into the memory allowed by max-core --> all the nondriving records are written to disk and in many cases, some or all of the driving records must also be written temporarily to disk. 
+
+For in-memory Join: 
+Use it if your nondriving inputs are small enough to fit into memory. 
+But if they aren't --> then Sort the data instead. 
+
+!!!!! IMPORTANT !!!! 
+If you decide to use in-memory JOIN 
+be super-careful to set the driving input to be your largest input (based on # of bytes). (We don't set it automatically -- we can't because we don't know what your data sizes are until you run the graph!) 
+By default, in0 is the driving input. (Or remember to always attach your largest input to in0 :) 
+
+You want to do everything you can to reduce the size of the nondriving inputs (aggregate, filter, drop fields you don't need) before they enter the Join. Improves your chances that the data will fit into max-core memory without having to spill to disk. 
+
+
+If you have set up everything correctly and your Join still spills lots of data to disk --> then it's probably better to sort the data instead. 
+
+
+None of these components fail if they spill to disk --> just makes them slower. 
+
+================================== 
+
+How do we know if a component is spilling data to disk? 
+Look at the tracking details 
+
+In the GDE, open the Tracking Details 
+Click the "View" button and add "Spillage" and "Peak Spillage" 
+
+Spillage --> amount of data on disk right now as the graph is running 
+Peak spillage --> highest amount of disk space used during the whole graph execution for that component ("high water mark") 
+
+When your graph is not running, spillage is always 0. 
+If you've already run the graph and it's done, you can only look at Peak Spillage. 
+
+===================================== 
+
+If you have 
+        SORT --> ROLLUP with sorted input 
+ROLLUP with sorted input does not even have a max-core parameter. 
+Doesn't use much memory at all (just about the same amount of memory as REFORMAT) and it will *never* spillage data to disk. 
+
+        SORT --> JOIN with sorted input 
+JOIN with sorted input does not have a max-core parameter, nor does it have a driving parameter because it doesn't need to put the nondriving data in memory. 
+It does have a "max-memory" parameter --> this is used only if you are having multiple records with the same key value (for example, if you're doing a cartesian join). 
+
+
+
+ROLLUP with sorted input 
+-- very little memory 
+-- very fast, very efficient, can pipeline 
+-- output data remains in the same order as the input data (sorted) 
+-- but it requires that the input data is sorted on the same key fields as the Rollup uses 
+        and if not, the Rollup fails. 
+
+ROLLUP in-memory 
+-- uses more memory (dependent on the number of key values in the output + 
+        how many output fields you have + aggregations you're computing for each key) 
+-- has a max-core parameter so that you can limit how much memory it uses (a safety mechanism to prevent it from using all the memory on your server!!) 
+-- if the amount of memory required for the hash table > max-core, we write some of the input records to disk until we can free up memory in the hash table for more key values. 
+-- cannot pipeline, no output until all the input records have been processed 
+-- output data is *NOT* sorted (because internally it does not sort the keys -- it just creates a hash table) 
+
+
+========================================= 
+
+Tomorrow: 
+        flow buffering 
+        techniques for avoiding flow buffering 
+        global variables + Filter by Expression 
+        phasing guidelines 
+        user defined data types & function 
+
+Friday: 
+        vectors 
+
+
+
+--- 
+Rebecca Buchheit Clayton
+Ab Initio Software

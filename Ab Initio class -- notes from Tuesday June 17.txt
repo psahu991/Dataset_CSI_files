@@ -1,0 +1,308 @@
+Wildcard rules apply only to: 
+        -- output fields that do not have any individual rules attached to them 
+        -- output fields that match a fieldname on the input 
+
+We have two wildcard rules in the same transform & when we've tried this before, it fails. Why does it work in this graph? 
+Answer: This can work in any graph -- this particular graph works correctly because the existing wildcard rule had a priority. 
+If you want to use multiple wildcard rules in the same transform, you need to specify priorities for the rules. 
+Very common -- in a JOIN transform: 
+        out.* :: in0.*; 
+        out.* :: in1.*; 
+--> error: there is a conflict in the priorities for the out.* 
+
+Solution: 
+        out.* :1: in0.*; 
+        out.* :2: in1.*; 
+the :1: and :2: are priorities. You can do this in grid view as well: right click on the rule & choose "Set priority". 
+The priorities are used to resolve conflicts if multiple inputs match the same output field. Rule with the higher priority goes first. "1" is the highest priority. 
+
+For example, if you had a field called "id" in in0 and a field called "id" in in1 and a field called "id" in the out, with the rules above --> the output "id" field gets its value from in0 because the in0.* wildcard rule has a higher priority. 
+
+Priority must be a positive number starting at 1. 
+You can also have a blank priority --> lowest priority, rule that is used as the last resort. 
+
+================================================== 
+
+remember how wildcard rules work.... 
+        out.* :: in.* --> expanded by DML engine into separate rules, one rule for each 
+                        matching output field 
+
+        out.* :: lookup("Stores Lookup", in0.store_no).*; 
+        --> expanded by DML engine into separate rules, one rule for each matching 
+                output field 
+        --> now we're back to our original performance problem: we're searching the 
+                lookup file + index for each output field separately 
+                = inefficient 
+
+Take-away: 
+        wildcard rules are a good idea for records that are simple inputs, like 
+        in0.* 
+        in1.* 
+        in.DETAIL.* 
+
+        but they're not a good idea for functions that return records 
+        (like the lookup().* above) because the function is called repeatedly, once 
+        per output field (= inefficient) 
+================================================= 
+
+"scalar" types --> simple types that store a single value: string, decimal, date, datetime, integer, real, void 
+
+"compound" types --> more complex types that store a list or set of values: record, vector 
+
+
+string and decimal are both character-based types 
+--> value is represented by characters 
+--> in ASCII (default charset), each character = 1 byte of raw data 
+
+raw data decimal value \065 --> maps to the letter "A" 
+raw data decimal value \048 --> maps to the letter "0" (zero) 
+raw data decimal value \049 --> maps to the letter "1" 
+and so on. 
+
+use characters to represent a string "abc" --> string 
+or to represent a numeric value "123" --> decimal 
+
+"123" could either be a string or a decimal in Ab Initio, either way it is valid. 
+decimals are more strict --> so "abc" can be a string, but it can't be a decimal because it's not a numeric value. 
+
+===================================== 
+
+Character-based types: string, decimal, date, and datetime 
+Numeric types: date, decimal, datetime, integer 
+        (numeric types --> types that represent numeric values) 
+
+Integer is a numeric type, but it is *not* a character-based type. 
+It is a "binary" type. 
+
+With integer, the data value is represented using powers of two. 
+Each bit in each byte of the integer represents the value 2 raised to some power based on the position of the bit in the byte. 
+
+If we want to represent the value "12" 
+        in decimal, we use the bytes \049 and \050 --> two bytes, characters "1" and "2" 
+        in integer, we need only a single byte which has the bits set at 
+        00001100 
+        2^7 * 0 + 2^6 * 0 + 2^5 * 0 + 2^4 * 0 + 2^3 * 1 + 2^2 * 1 + 2^1 * 0 + 2^0 * 0 = 12 
+
+Integer computations are done in the hardware, directly in the CPU --> very fast 
+Decimal computations must be done in software --> slower 
+(more on that later) 
+
+
+If we have a string value "12" in our source data 
+and we convert it to a decimal type --> the raw bytes in the data don't change because decimal is just a character-based type as well and it represents the value "12" using the characters "1" and "2" 
+but if we later to convert to an integer type --> the raw byte in the data do change because we have to convert the powers of two representation shown above. 
+
+======================================================= 
+
+When Ab Initio creates output records -- in components using transforms -- we do it by building the record starting with the first field in the output record format, then the second field, and so on. 
+
+In a transform, the rules in the transform are evaluated in the order of the output fields when you run the graph. The actual order that you list the rules in the transform editor itself are irrelevant. 
+
+======================================================= 
+
+In general -- global variables are *not* accessible across components or by different partitions of the same component. 
+
+However -- starting in version 3.1, we introduced a new feature where components in the same transaction group (components that are folded together -- typically used in web services applications) can share a global variable. (Lots of restrictions on this -- far too complicated to talk about in this class). Help has information on this if you're interested. Search on "transaction group". 
+
+
+====================================== 
+
+Automatic type conversion is used when assigning values to the output fields 
+& when using functions. 
+(For example, string_concat uses automatic type conversion to convert all its input arguments to strings.) 
+
+But inside a rule, or when using operators (like "+") -- the types need to be the same. 
++ --> when used with numeric values is "addition" 
++ --> when used with string values is "concatenation" 
+If you use + with a string & a decimal, we don't know whether to concat or add!! 
+All the arguments to + operator must be the same type. 
+
+True also for other operators like >, < and ==.... 
+
+Try this in your GDE (Run > Execute Command): 
+        m_eval ' (string(1))"1"  >  (decimal(1))"1" ' 
+--> error! 
+
+
+=========================================== 
+
+Varstring (also known as "length-prefixed string") 
+-- variable length string 
+-- each record can have values that are a different size & use a different # of bytes for storage for that field 
+
+varstring has a "length prefix" --> numeric value that indicates the length of the string value 
+
+If I wanted to store the string value "Becky" --> I have a prefix with value 5 (because "Becky" has 5 characters) 
+
+Prefix is stored first --> for performance reasons 
+by putting the prefix first, we can read the prefix value & immediately skip ahead to the next field because we know exactly how many bytes are in the current field. 
+
+When you have delimited strings, the delimiter is at the *end* of the string value -- so we have to read every character in the string to find the delimiter & the end of the string value 
+
+For long string values, varstrings get measureably better performance than delimited strings. 
+
+
+Here's an example of a length-prefixed string data type: 
+        string(decimal(2)) full_name; 
+        type inside the ( ) is the data type you want to use to store the prefix value 
+                here it's decimal(2) 
+
+I want to store the value "Ab Initio" in this field. The raw data looks like this 
+ 9Ab Initio 
+
+Notice that there's a space before the "9" --> because I used decimal(2) as the prefix type. 
+
+I want to store the value "Becky Clayton" in this field. The raw data looks like this: 
+13Becky Clayton 
+
+How long is the largest string that I can store with the type above? 99 characters long 
+Because 99 is the maximum value you can store in a 2-digit decimal. 
+
+
+If I have this type: 
+        string(integer(2)) full_name; 
+then the maximum string length is  32767characters because  32767 is the max value for a 2-byte integer. 
+
+
+In practice, almost no one uses decimal prefixes for varstrings. They're slower and they use more space. 
+In practice, we almost always use integer types for varstrings. 
+        string(integer(1)) --> up to 127 chars in string value 
+        string(integer(2)) --> up to 32767 chars in string value 
+        string(integer(4)) --> up to about 2 billion chars in string value 
+                        2 billion = 2 GB --> string value that is 2 GB long 
+        string(integer(8)) --> in the trillions 
+
+Actual space used to store the value is *not* the maximum string length. 
+Actual space is the actual size of the value + size of the prefix. 
+
+
+How do we know what is the largest value you can store in an integer? 
+Use this formula: 
+        math_pow ( 2, (8 * N - 1)) - 1 
+
+N is the number of bytes in the integer 
+-1 inside the exponent is because I am using signed integers (default) 
+-1 outside the math_pow function is because we need to represent 0 
+
+
+For a 2-byte integer 
+        math_pow (2, (8*2-1)) -1 = 32,767 
+
+
+======================================================== 
+
+If I have a field 
+        string(26) letters; 
+
+I have two values: 
+"abcdefghijklmnopqrstuvwxyz" 
+"a" --> must be padded with 25 spaces 
+Total storage required = 52 bytes 
+
+
+If I have a field 
+        string(",") letters; 
+
+I have two values: 
+"abcdefghijklmnopqrstuvwxyz" 
+"a" 
+We have to add "," to the end of each value. 
+Total storage required = (26 bytes + 1 byte) + (1 byte + 1 byte) = 29 bytes 
+
+
+If I have a field 
+        string(integer(1)) letters; 
+
+I have two values: 
+"abcdefghijklmnopqrstuvwxyz" 
+"a" 
+We have to add a 1-byte integer to the start of each string value. 
+Total storage required = (26 bytes + 1 byte) + (1 byte + 1 byte) = 29 bytes 
+advantage over the delimited type --> varstring gets faster processing! 
+
+
+==================== 
+
+When your string values are all roughly the same size -- use a fixed-size string type. Fastest. 
+When your string values are widely varying in size (some very short, some very long) -- use a varstring string type. More space efficient (less memory, less disk space). 
+
+==================== 
+
+I have a decimal(10) field and I want to convert to an integer without losing any data values or truncating the data or getting errors. 
+
+What is the max value possible in a decimal(10)? 9,999,999,999 
+Can we use integer(4)? No -- because the max value is about 2,000,000,000 -- possible to have customer id values that are larger than what we can store in integer(4). 
+So, we use integer(8) instead. 
+
+
+I have a date field YYYYMMDD -- we can store that in integer(4). 
+(Help Library will tell you this if you search on "data conversion rules") 
+
+
+========================================= 
+
+If your record types are very similar -- same fields listed in the same order 
+Using a record assignment 
+        out :: in.DETAIL; 
+will be slightly faster than using wildcard rules 
+        out.* :: in.DETAIL.*; 
+
+In our case, the output record format is very different than the input record format (fields are in different order), so the performance for both record assignment & wildcard rules is about the same. 
+
+
+======================== 
+
+There is a cost to adding REFORMAT to your graph to convert key fields to integers. 
+It's just that improvement in SORT is so much bigger than the cost, that you still see that the graph is faster + uses less CPU overall. 
+
+
+========================= 
+
+There are two ways to read the bits in the raw data for integer values: 
+        right-to-left --> little endian 
+        or 
+        left-to-right --> big endian 
+
+Some hardware does it one way, some hardware does it the other way. 
+If you have an environment where you are mixing different servers -- part of the graph runs on one type of server & part runs on a different server 
+if the servers don't use the same endianess, you need to specify which one your data is in the record format. 
+
+For example, if you have integer data created by a mainframes -- then that data is big endian. 
+If you process that data on a server that has x86 architecture CPUs, then they will read bits in the wrong order (because x86 is little endian) and all your integer values will be wrong. 
+To prevent this, in your record format 
+        big endian integer(4) my_mainframe_value; 
+Then Ab Initio knows to read the bits in the correct order even if you are processing the data on a little endian server. 
+
+
+============================================ 
+
+Any questions so far? 
+
+Any adverse affects in using decimal versus integer? 
+        No -- other than decimal gets slower performance. 
+        Decimals can store any value that you would store in an integer 
+        given the appropriate size. 
+        There's no "endianess" in decimals because they're just character data. 
+        But decimals can have a character set (ASCII, EBCDIC, etc.) that does change 
+                the raw bytes that are used to store the value. 
+
+If you have a decimal value created on mainframe, it's probably EBCDIC charset. 
+But default on Unix + Windows OS is ASCII charset. 
+To prevent the Unix + Windows servers from reading mainframe data incorrectly, you need to specify the charset that the values were created with: 
+        ebcdic decimal(10) my_mainframe_value; 
+
+
+
+
+Tomorrow: 
+        more about conditional record formats 
+        REDEFINE FORMAT 
+        flow buffering 
+        using global variables in a FILTER package 
+        performance when using phasing 
+        CHECKPOINTED SORT 
+        data parallel graph design as well for this graph 
+
+--- 
+Rebecca Buchheit Clayton
+Ab Initio Software

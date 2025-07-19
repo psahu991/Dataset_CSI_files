@@ -1,0 +1,45 @@
+Hi everyone: 
+
+Here is some information (see below) about some of the resources that are available for you for further self-study! 
+
+Please do let me know if you have any questions -- happy to answer them! 
+
+Warm regards, 
+Becky 
+
+Your remote training server accounts will be active until August 31 2014.  While the accounts are active, you can log into the server at any time, any day of the week.  If you have questions or need help: 
+
+[connection problems]  If you run into problems using the remote desktop connection, please send e-mail to RemoteTraining@abinitio.com for assistance.  They will be able to help with login problems, connection problems, etc. 
+
+[renewing your RTF account] If you would like to renew your training server account once it has expired, please contact the Ab Initio liaison at your company, Thomas Buehlmann (thomas.buehlmann@accenture.com). 
+
+[questions about Ab Initio]  You can log in to the Ab Initio Discussion Forums to ask questions and discuss Ab Initio.  From the GDE menus, choose Help > Online Discussion Browser to open the Discussion Browser window. Click the link "Not a member" yet to create your user id and password on the discussion forums. (This is not set up automatically with your RTF id and password, and you may use any id and password that you wish for the discussion forums.) 
+
+If you have questions when working on a project for a customer, please contact support@abinitio.com for prompt assistance.  Let them know which customer you are working for and copy your project manager on the e-mail. 
+  
+[questions about course materials]  Please send an e-mail to rbuchheit@abinitio.com with general questions about the course materials and documentation available on the RTF.   
+
+
+Here are some things that you can do for further study in Ab Initio from any GDE! 
+
+[Review the GDE Help]  The GDE Help contains much of the material from our reference manuals.   Go to the Help menu in the GDE, choose Contents, and then click on the Search tab of the Help window.  You should search for topics on FAQs, Troubleshooting, and Improving graph performance. 
+
+[Coding Guidelines] The Guide>Book is a set of recommended guidelines for developing graphs in Ab Initio.  To access the Guide>Book, use the GDE Help (Help >> Contents) and on the Contents tab, you should see a topic for Co>Operating System Help -- Developer Learning Resources -- The Guide>Book. 
+
+[Cook>Book: Advanced Exercises/Design Patterns] The Cook>Book (from the GDE go to Help > Contents, on the Contents tab, open Co>Operating System Help -- Developer Learning Resources and you will see a Cook>Book subtopic) is a set of "recipes" for solving common problems using Ab Initio.  It is more advanced than the Work>Book, and a great introduction to the types of problems frequently encountered in Ab Initio graph development.   
+
+You can set up the Cook>Book sandbox in your home directory by following these steps: 
+1.        Log in to the RTF and start the GDE. 
+2.        Go to the Help menu and choose Examples. 
+3.        Choose Cook>Book from the list and click the “Install” button. 
+4.        Click the “Open Sandbox” button to open the sandbox in your GDE. 
+
+[Advanced Examples] There are many example sandboxes available through the GDE. To set up an example sandbox,   
+1.        Log in to the RTF and start the GDE. 
+2.        Go to the Help menu and choose Examples. 
+3.        Select the example you are interested in from the list, and then click the "Install" button. 
+4.         Once the sandbox is installed, click the "Open Sandbox" button to open the sandbox in your GDE. 
+
+---
+Rebecca Buchheit Clayton
+Ab Initio Software

@@ -1,0 +1,312 @@
+Right now, we format the address_line2 as 
+        city + " " + state + " " + zipcode 
+
+If we later want to change it to use commas: 
+        city + ", " + state + " " + zipcode 
+Then we have to go into every transform in every graph that computes this address & fix it. 
+
+If instead, we write a user-defined function to format the address, then if we later decide to change the format --> we need change it only once, in the user-defined function. 
+
+If you see a pattern where the same code is used over & over again --> user-defined function 
+
+Two ways (most people use both) to decide when to use a user-defined function: 
+top-down : before you start project, project leader or manager decides that we need a function because they understand the project & realize that it's something that you'll be doing often 
+bottom-up : If you see a pattern where the same code is used over & over again as you're developing the project. 
+
+============================ 
+
+date("YYYYMMDD")[integer(2)] start_dates; 
+date("YYYYMMDD")[short] start_dates; 
+--> maximum length of the vector is 32767 dates. 
+
+string(integer(4))[integer(4)] addresses; 
+string(int)[int] addresses; 
+--> length prefixed vector of length prefixed strings 
+--> each element in the vector is a string that can be between 0 and ~2 billion chars long 
+--> number of strings in the vector can be between 0 and ~2 billion strings 
+very flexible data type! 
+commonly used for XML data. 
+
+
+Let's say that I have this type: 
+        string(int)[int] addresses; 
+
+And I have two input records and I have these values: 
+#1        "1 Main St", "2 Elm St" 
+#2        (empty) 
+
+How much space do we need to store those values (assume ASCII data)? 
+Record #1 
+        "1 Main St" --> 9 bytes + 4 bytes for the int string prefix = 13 bytes 
+        "2 Elm St" --> 8 bytes + 4 bytes for the int string prefix = 12 bytes 
+        + 4 bytes for the vector prefix 
+        = 29 bytes total 
+
+Record #2 
+        4 byte for the vector prefix, there are no string values 
+        = 4 bytes total 
+
+Amount of space we need in total for both records is just 33 bytes 
+Even though the maximum amount of space we could use is in the crazy amount of space! 
+        2 MB per string + 4 bytes for the prefix 
+        * 2 billion strings = 4 x 10^18 
+
+======================================== 
+
+We converted input data 
+        string(15)[int] names; 
+
+to a new format using Reformat (automatic type conversion) 
+        string(int)[int] names; 
+
+Each element in the vector is now a length-prefixed string rather than being a fixed-string. 
+But the string values are still padded with spaces in the output. 
+
+How can we remove the spaces? 
+string_trim() in the Reformat transform. 
+
+We need to somehow apply string_trim() to every element in the vector. 
+We can't just do string_trim(in.names). 
+
+
+string_trim(in.names) --> fails validation because you can't use string functions on vector 
+                        inputs 
+string_trim(in.names[0]) --> what does this do? 
+        trims the first element in the vector only 
+        what type of value does it return? string 
+        cannot connect to out.names --> out.names is a vector 
+        you cannot assign a string value to a vector 
+
+        We also cannot do this: 
+        out.names[0] :: --> we just don't allow you to assign individual elements to 
+                output vectors 
+                if you have an output vector, you must assign the entire vector at 
+                once. 
+
+If you create a variable that has a vector type -- you can initialize it. 
+        let string(int)[int] my_vector = allocate(); 
+allocate() function initializes an empty vector 
+
+Our next thought then we could assign the input vector to this variable --> variables values still have padding. We haven't done string_trim yet. 
+We're working with length-prefixed vectors --> so every input record potentially has a vector with a different size. 
+So we can't just do this: 
+        my_vector[0] = string_trim(in.names[0]); 
+        my_vector[1] = string_trim(in.names[1]); 
+        and so on -- because we don't know how many elements are in the vector. 
+
+The above is the right idea but the wrong way to approach it. Any ideas how we could write code to do the above? Write a loop! 
+
+In fact, I don't even need to declare a local variable to work with. 
+Instead, I can write a special type of loop that will automatically assign correctly to the output vector! 
+In Ab Initio, we have a special type of loop called a "for loop expression" 
+--> always returns a vector 
+You can use a for loop expression to assign values to an output vector in a transform. 
+
+===================== 
+
+Evaluate DML pane --> acts just like m_eval 
+        It does not have access to any of the graph parameter values, any variables 
+        in your functions or any input values 
+        --> because you're not running the graph! 
+        Open Expression Editor + F8 to get the Evaluate DML pane 
+
+If you want to test an expression, you'll need to provide constant values in place of any inputs that you'd want to use in your actual expression. 
+
+
+If you want to test expressions using input values, parameter values, etc. 
+        you need to use breakpoint debugger to do that. 
+        Then you're running the graph so you have access to those values. 
+        Open Transform, from Debug menu, turn on Breakpoints 
+                add breakpoints to expressions you want to debug. 
+
+=================================================== 
+
+for (let t in [vector 10, 5, -5, 27, -10]) : if (t > 0) t 
+        --> how many elements in the output vector? 3 
+        --> returns 
+                [vector 10, 5, 27] 
+
+
+
+for (let t in [vector 10, 5, -5, 27, -10]) : if (t > 0) t else -99 
+        --> how many elements in the output vector? 5 
+        --> [vector 10, 5, -99, 27, -99] 
+
+
+In a for loop expression 
+        the index variable always starts at 0 (no matter what) 
+        and always increases by exactly 1 
+
+In a while loop expression 
+        if you want to use a counter variable (not required) 
+        you can start it at any value 
+        and increase/decrease by any amount at each iteration 
+        
+
+========================================================= 
+
+There are lots of vector functions that are available to work with vectors. 
+Not everything needs to be done with loops. 
+
+For example: 
+        vector_sort --> sorts the elements in a vector 
+        vector_concat --> concatenates two vectors together 
+        vector_select --> selects all elements in a vector that have a particular value 
+        vector_sum --> sums the values of all elements in the vector 
+                (works only if your vector elements happen to integers/decimals/numeric 
+                values) 
+        many others! 
+
+Before you go writing a for loop to work with a vector --> make sure that there isn't already a function that does what you want! 
+
+Search the help for "vector functions" 
+Remember that if you don't understand exactly how the function works --> you can test it! 
+(Evaluate DML expression -- F8 in the Expression Editor) 
+
+
+Remember when I wrote a for-loop expression to remove blank elements from an input vector... 
+        out.last_3_cities :: for (let city in in.last_3_cities) 
+                        : if (not is_blank(city)) string_trim(city); 
+
+
+I could have also done this: 
+                out.last_3_cities :: vector_difference(for (let city in in.last_3_cities) 
+                                                               : string_trim(city), [vector ""]); 
+Removes blank values from the vector created by the for loop expression. 
+
+
+=================================================== 
+
+Your accounts on the training server are active until August 31 2014. 
+You can log in at any time from anywhere to 
+        -- experiment in your sandbox 
+        -- use our other software products (Continuous Flows, Conduct>It, etc.) that 
+                are installed 
+        -- review the PPT slides 
+        -- use the Help 
+        -- join the Ab Initio Discussion Forums. 
+
+Will send instructions after class today about how to  join the Ab Initio Discussion Forums., reactitvate your account if it expires, etc. 
+
+If you have any questions that you think of later -- general Ab Initio questions -- I am happy to answer them for you! 
+        rbuchheit@abinitio.com 
+
+If you have questions about a specific error message or problem in a graph for your project, contact support@abinitio.com (just tell them what customer + project you're working for) 
+
+============================================== 
+
+Any general questions? 
+
+A little bit about resource pools -- 
+        concept for Conduct>It 
+        you can create a resource pool --> definition of a resource + how many units of 
+        that resource are available (e.g., Database Connections has 100 units available) 
+        then in your plans, you can assign a resource amount to each task 
+        (e.g., Graph A needs 50 units of Database Connections, Graph B need 75 
+                units of Database Connections) 
+When you run your plans 
+        Graph A and Graph B cannot run at the same time because their combined 
+        requirements for database connections exceeds the amount available in your 
+        resource pool. 
+It's a way of preventing too many tasks from running at the same time 
+        resources can be anything: database connections, network connections, memory 
+        etc. 
+
+=================================== 
+
+In Rollup, we have 
+        initialize 
+        rollup 
+        finalize 
+functions when we expand the rollup transform. 
+How many times do each of these functions run? 
+        initialize --> runs each time we see a new key value in the input data 
+                = number of distinct key values 
+        rollup --> runs for each input record 
+        finalize --> runs once we know that we have processed all the records in a key 
+                group 
+                = number of distinct key values 
+
+So, if you have input data with 
+        10 million records 
+        your key was us_state, 50 states 
+
+        initialize --> 50 times 
+        rollup --> 10 million times 
+        finalize --> 50 times 
+
+The finalize function actually creates the output records. 
+Number of output records = number of times the finalize function has run (as long as you aren't using output_select function). 
+
+================== 
+Scan also has an expanded transform. 
+        initialize --> runs each time we see a new key value in the input data 
+                = number of distinct key values 
+        scan --> runs for each input record 
+        finalize --> runs for each input record 
+        
+So, if you have input data with 
+        10 million records 
+        your key was us_state, 50 states 
+
+        initialize --> 50 times 
+        scan --> 10 million times 
+        finalize --> 10 million times 
+
+The only real difference between Rollup and Scan is when the finalize function is called. 
+Rollup calls once per key group --> number of output records = number of key values 
+Scan calls once per input record --> number of output records = number of input records. 
+
+
+======================= 
+
+Don't use shell interpretation!!! 
+It breaks dependency analysis -- pretty soon it will be deprecated. 
+
+Use PDL interpretation instead. 
+If you must run a shell command -- if there is no alternative to doing so in DML -- do not embed these directly in transforms because it breaks dependency analysis. 
+
+Instead, create a graph parameter (e.g., HOST), set the interpretation to PDL 
+        set the parameter as "Set Dependent On"  AB_PARAMETER_ENV 
+        then you can have two values: 
+        sandbox: $( hostname ) 
+        eme: server1 
+
+Then you can use that graph parameter in your Reformat transform 
+        --> set the Intepretation of the Reformat transform to PDL 
+        --> use the parameter 
+                out.hostname :: $HOST; 
+
+Take a look at the Help Library , search on "PARAM227" error 
+        --> will explain how to do all of the above. 
+
+
+"air" commands and "m_" commands run in the Korn shell. 
+So all of the above instructions apply to them as well! 
+Don't use them in a transform directly. Create a parameter to get the value, set up the parameter value correctly for dependency analysis, then use the parameter in your transform. 
+
+============================================ 
+
+You can pass parameters to commandline for Run Program 
+        commandline        my_script.ksh $HOST 
+
+If you use a parameter as an argument to script or command in Run Program, 
+that parameter *MUST* be exported to the environment. 
+
+In the Parameters Editor, you must check the "Export to Environment" attribute. 
+
+============================================ 
+
+If you want to pass values from one component to Run Program 
+then it has to be as data. 
+Run Program has an input port. Use it. 
+
+Some component --> Run Program 
+The output of Some Component becomes the "stdin" to the script/command you are running in Run Program. 
+Script or command must be able to read data from "stdin" --> shell concept. 
+
+============================================== 
+
+--- 
+Rebecca Buchheit Clayton
+Ab Initio Software
