@@ -1,0 +1,63 @@
+Steps
+Install Multiple Co>Op Versions: Ensure both Co>Operating System versions (4.1.1.1 and 4.3.3) are installed on your system.
+
+Set AB_HOME for Each Job: Before running a graph, set the AB_HOME environment variable to the installation path of the required Co>Operating System version. Also, ensure that $AB_HOME/bin is first in your PATH.
+
+For example:
+
+# To run a graph with Co>Op 4.1.1.1
+export AB_HOME=/path/to/abinitio-V4-1-1-1
+export PATH=$AB_HOME/bin:$PATH
+air sandbox run <graph_for_4.1.1.1>
+
+# To run a graph with Co>Op 4.3.3
+export AB_HOME=/path/to/abinitio-V4-3-3
+export PATH=$AB_HOME/bin:$PATH
+air sandbox run <graph_for_4.3.3>
+Automate with Wrapper Scripts or Job Definitions:
+
+You can use wrapper scripts to set AB_HOME and PATH for each graph run.
+Alternatively, maintain a versions.txt file in your sandbox that maps each graph to its certified Co>Op version, and have your scripts read this file to set the correct environment.
+If you use Control>Center, specify the version in the job definition.
+Compatibility Setting (AB_COMPATIBILITY): The AB_COMPATIBILITY attribute in each graph or plan file helps ensure backward compatibility, but the actual Co>Op version used is determined by AB_HOME at runtime.
+
+
+mux_config_file Parameter (optional): You can specify a mux_config_file to provide a per-component multiplexer configuration, rather than using a graph-wide configuration variable.
+
+mux_config_file: /path/to/mux_config.yaml
+
+m_db gendml -dbcfile /path/to/bigquery.dbc -table <project.dataset.table> -out /path/to/output.dml
+
+
+The mux_config_file parameter in Ab Initio specifies the path to a multiplexer configuration file, which is an XML file (not YAML) used to configure properties for cloud object storage connectors, such as Google Cloud Storage (GCS). This file allows you to set connector-specific properties, including authentication details.
+
+A typical multiplexer configuration file for Google Cloud Storage might look like the following:
+
+You will need to adjust the code to fit your project needs, but here is an example for getting started:
+
+<configuration>
+  <property>
+    <name>fs.gs.auth.type</name>
+    <value>SERVICE_ACCOUNT_JSON_KEYFILE</value>
+  </property>
+  <property>
+    <name>fs.gs.auth.service.account.json.keyfile</name>
+    <value>/path/to/service-account.json</value>
+  </property>
+  <property>
+    <name>fs.gs.project.id</name>
+    <value>your-gcp-project-id</value>
+  </property>
+  <!-- Add other properties as needed -->
+</configuration>
+Replace /path/to/service-account.json with the path to your Google Cloud service account key file.
+Replace your-gcp-project-id with your actual Google Cloud project ID.
+Note: The file must be in XML format, not YAML. Ensure that any special characters in property values are properly escaped according to XML standards.
+
+For more information, see the following:
+
+• The multiplexer configuration file
+
+• Accessing data in Google Cloud Storage (GCS)
+
+• Using a Google Cloud service account key (JSON)
