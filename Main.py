@@ -268,3 +268,11 @@ def extract_flows_refined(df: pd.DataFrame) -> dict:
         }
 
     return flows
+
+flows = extract_flows_refined(df)
+
+for flow_id, flow in flows.items():
+    print("=" * 80)
+    print(flow_id)
+    for k, v in flow.items():
+        print(f"{k}: {v}")
