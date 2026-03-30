@@ -271,7 +271,188 @@ def build_complexity_matrix(flows, nodes, physical_edges, logical_edges):
         "nodes": node_metrics,
         "flows": flow_metrics
   }
+from collections import defaultdict
 
+
+def build_qm_graph_data(flows):
+    """
+    Build QM graph structures from refined flows.
+
+    Returns:
+    - nodes: dict keyed by QM
+    - physical_edges: dict keyed by (src_qm, tgt_qm)
+    - logical_edges: dict keyed by (producer_app, consumer_app)
+
+    Notes:
+    - physical_edges represent QM-to-QM communication relationships
+    - logical_edges represent app-to-app flow relationships
+    - nodes capture hosted apps, produced flows, consumed flows, and routing-only status
+    """
+
+    def as_list(value):
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if str(value).strip():
+            return [str(value).strip()]
+        return []
+
+    # ------------------------------------------------------------
+    # 1. Initialize node containers
+    # ------------------------------------------------------------
+    nodes = defaultdict(lambda: {
+        "hosted_apps": set(),
+        "produced_flows": set(),
+        "consumed_flows": set(),
+        "transit_flows": set(),
+        "routing_only": True,
+    })
+
+    # ------------------------------------------------------------
+    # 2. Edge containers
+    # ------------------------------------------------------------
+    physical_edges = defaultdict(lambda: {
+        "flow_ids": set(),
+        "producer_apps": set(),
+        "consumer_apps": set(),
+        "source_queues": set(),
+        "target_queues": set(),
+        "edge_count": 0,
+    })
+
+    logical_edges = defaultdict(lambda: {
+        "flow_ids": set(),
+        "producer_qms": set(),
+        "consumer_qms": set(),
+        "routing_target_qms": set(),
+        "distinct_flow_count": 0,
+    })
+
+    # ------------------------------------------------------------
+    # 3. Populate from flows
+    # ------------------------------------------------------------
+    for flow_id, flow in flows.items():
+        producer_app = flow.get("producer_app", "")
+        consumer_app = flow.get("consumer_app", "")
+
+        producer_qms = as_list(flow.get("producer_home_qm", ""))
+        consumer_qms = as_list(flow.get("consumer_home_qm", ""))
+        routing_target_qms = as_list(flow.get("routing_target_qm", ""))
+
+        source_queues = set(flow.get("source_queues", []))
+        target_queues = set(flow.get("target_queues", []))
+
+        # -----------------------------
+        # Register hosted apps on nodes
+        # -----------------------------
+        for qm in producer_qms:
+            nodes[qm]["hosted_apps"].add(producer_app)
+            nodes[qm]["produced_flows"].add(flow_id)
+            if producer_app:
+                nodes[qm]["routing_only"] = False
+
+        for qm in consumer_qms:
+            nodes[qm]["hosted_apps"].add(consumer_app)
+            nodes[qm]["consumed_flows"].add(flow_id)
+            if consumer_app:
+                nodes[qm]["routing_only"] = False
+
+        # -----------------------------
+        # Logical edges (app-to-app)
+        # -----------------------------
+        logical_key = (producer_app, consumer_app)
+        logical_edges[logical_key]["flow_ids"].add(flow_id)
+        logical_edges[logical_key]["producer_qms"].update(producer_qms)
+        logical_edges[logical_key]["consumer_qms"].update(consumer_qms)
+        logical_edges[logical_key]["routing_target_qms"].update(routing_target_qms)
+        logical_edges[logical_key]["distinct_flow_count"] += flow.get("distinct_flow_count", 1)
+
+        # -----------------------------
+        # Physical edges (QM-to-QM)
+        # -----------------------------
+        if flow.get("has_remote", False):
+            # cross-QM or remote-based relationship
+            for src_qm in producer_qms:
+                for tgt_qm in routing_target_qms:
+                    if not src_qm or not tgt_qm:
+                        continue
+
+                    edge_key = (src_qm, tgt_qm)
+                    physical_edges[edge_key]["flow_ids"].add(flow_id)
+                    physical_edges[edge_key]["producer_apps"].add(producer_app)
+                    physical_edges[edge_key]["consumer_apps"].add(consumer_app)
+                    physical_edges[edge_key]["source_queues"].update(source_queues)
+                    physical_edges[edge_key]["target_queues"].update(target_queues)
+                    physical_edges[edge_key]["edge_count"] += 1
+
+            # If routing target differs from actual consumer QM, capture downstream connectivity too
+            for route_qm in routing_target_qms:
+                for cons_qm in consumer_qms:
+                    if not route_qm or not cons_qm or route_qm == cons_qm:
+                        continue
+
+                    edge_key = (route_qm, cons_qm)
+                    physical_edges[edge_key]["flow_ids"].add(flow_id)
+                    physical_edges[edge_key]["producer_apps"].add(producer_app)
+                    physical_edges[edge_key]["consumer_apps"].add(consumer_app)
+                    physical_edges[edge_key]["source_queues"].update(source_queues)
+                    physical_edges[edge_key]["target_queues"].update(target_queues)
+                    physical_edges[edge_key]["edge_count"] += 1
+
+                    # route_qm is acting like transit/routing for this flow
+                    nodes[route_qm]["transit_flows"].add(flow_id)
+
+        elif flow.get("has_local_only", False):
+            # local-only flow: still ensure node presence, but no inter-QM physical edge
+            pass
+
+    # ------------------------------------------------------------
+    # 4. Finalize routing_only after all data is loaded
+    # ------------------------------------------------------------
+    for qm, meta in nodes.items():
+        # routing-only = no hosted apps, but may still participate in transit
+        if meta["hosted_apps"]:
+            meta["routing_only"] = False
+        else:
+            meta["routing_only"] = True
+
+    # ------------------------------------------------------------
+    # 5. Convert sets to sorted lists for stable output
+    # ------------------------------------------------------------
+    nodes = {
+        qm: {
+            "hosted_apps": sorted(v["hosted_apps"]),
+            "produced_flows": sorted(v["produced_flows"]),
+            "consumed_flows": sorted(v["consumed_flows"]),
+            "transit_flows": sorted(v["transit_flows"]),
+            "routing_only": v["routing_only"],
+        }
+        for qm, v in nodes.items()
+    }
+
+    physical_edges = {
+        edge: {
+            "flow_ids": sorted(v["flow_ids"]),
+            "producer_apps": sorted(v["producer_apps"]),
+            "consumer_apps": sorted(v["consumer_apps"]),
+            "source_queues": sorted(v["source_queues"]),
+            "target_queues": sorted(v["target_queues"]),
+            "edge_count": v["edge_count"],
+        }
+        for edge, v in physical_edges.items()
+    }
+
+    logical_edges = {
+        edge: {
+            "flow_ids": sorted(v["flow_ids"]),
+            "producer_qms": sorted(v["producer_qms"]),
+            "consumer_qms": sorted(v["consumer_qms"]),
+            "routing_target_qms": sorted(v["routing_target_qms"]),
+            "distinct_flow_count": v["distinct_flow_count"],
+        }
+        for edge, v in logical_edges.items()
+    }
+
+    return nodes, physical_edges, logical_edges
 flows = extract_flows_refined(df)
 nodes, physical_edges, logical_edges = build_qm_graph_data(flows)
 
