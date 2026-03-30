@@ -1,0 +1,187 @@
+import pandas as pd
+
+
+def as_list(value):
+    """
+    Normalize scalar-or-list fields into a clean list.
+    """
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if str(value).strip():
+        return [str(value).strip()]
+    return []
+
+
+def build_flat_edge_table(flows: dict) -> pd.DataFrame:
+    """
+    Flatten refined flow objects into one row per queue-pair edge.
+
+    Output is designed for:
+    - fan-in / fan-out analysis
+    - QM pair summaries
+    - ambiguity analysis
+    - target transformation reasoning
+    """
+
+    rows = []
+
+    for flow_id, flow in flows.items():
+        producer_apps = flow.get("producer_apps", [])
+        consumer_apps = flow.get("consumer_apps", [])
+
+        producer_apps = producer_apps if producer_apps else [flow.get("producer_app", "")]
+        consumer_apps = consumer_apps if consumer_apps else [flow.get("consumer_app", "")]
+
+        producer_qms = as_list(flow.get("producer_home_qm", ""))
+        consumer_qms = as_list(flow.get("consumer_home_qm", ""))
+        routing_target_qms = as_list(flow.get("routing_target_qm", ""))
+
+        queue_pairs = flow.get("queue_pairs", [])
+        resolution_status = flow.get("resolution_status", "UNRESOLVED")
+        ambiguity_type = flow.get("ambiguity_type")
+        match_confidence = flow.get("match_confidence")
+        exact_qm_match = flow.get("exact_qm_match", False)
+        exact_queue_match = flow.get("exact_queue_match", False)
+
+        has_remote = flow.get("has_remote", False)
+        has_alias = flow.get("has_alias", False)
+        has_local_only = flow.get("has_local_only", False)
+
+        record_count = flow.get("record_count", 0)
+        distinct_flow_count = flow.get("distinct_flow_count", 1)
+        issues = "|".join(flow.get("issues", []))
+
+        # If queue_pairs is empty, still emit one placeholder row
+        if not queue_pairs:
+            queue_pairs = [{
+                "source_queue": "",
+                "target_queue": "",
+                "source_queue_type": "",
+                "target_queue_type": ""
+            }]
+
+        for producer_app in producer_apps:
+            for consumer_app in consumer_apps:
+                for producer_qm in (producer_qms or [""]):
+                    for routing_target_qm in (routing_target_qms or [""]):
+                        for consumer_qm in (consumer_qms or [""]):
+                            for pair in queue_pairs:
+                                source_queue = pair.get("source_queue", "")
+                                target_queue = pair.get("target_queue", "")
+                                source_queue_type = pair.get("source_queue_type", "")
+                                target_queue_type = pair.get("target_queue_type", "")
+
+                                # Derived edge classification
+                                if has_local_only:
+                                    edge_kind = "LOCAL"
+                                elif producer_qm and consumer_qm and producer_qm != consumer_qm:
+                                    edge_kind = "CROSS_QM"
+                                elif has_remote:
+                                    edge_kind = "REMOTE_SAME_QM"
+                                else:
+                                    edge_kind = "UNKNOWN"
+
+                                rows.append({
+                                    "flow_id": flow_id,
+
+                                    "producer_app": producer_app,
+                                    "consumer_app": consumer_app,
+
+                                    "producer_qm": producer_qm,
+                                    "routing_target_qm": routing_target_qm,
+                                    "consumer_qm": consumer_qm,
+
+                                    "source_queue": source_queue,
+                                    "target_queue": target_queue,
+                                    "source_queue_type": source_queue_type,
+                                    "target_queue_type": target_queue_type,
+
+                                    "edge_kind": edge_kind,
+
+                                    "has_remote": has_remote,
+                                    "has_alias": has_alias,
+                                    "has_local_only": has_local_only,
+
+                                    "resolution_status": resolution_status,
+                                    "ambiguity_type": ambiguity_type,
+                                    "match_confidence": match_confidence,
+                                    "exact_qm_match": exact_qm_match,
+                                    "exact_queue_match": exact_queue_match,
+
+                                    "record_count": record_count,
+                                    "distinct_flow_count": distinct_flow_count,
+                                    "issues": issues,
+                                })
+
+    edge_df = pd.DataFrame(rows)
+
+    if edge_df.empty:
+        return edge_df
+
+    # Optional: stable sort for readability
+    sort_cols = [
+        "producer_app", "consumer_app",
+        "producer_qm", "routing_target_qm", "consumer_qm",
+        "source_queue", "target_queue"
+    ]
+    edge_df = edge_df.sort_values(sort_cols).reset_index(drop=True)
+
+    # Add a unique edge id
+    edge_df.insert(0, "edge_id", range(1, len(edge_df) + 1))
+
+    return edge_df
+
+def compute_producer_fan_out(edge_df: pd.DataFrame) -> pd.DataFrame:
+    return (
+        edge_df.groupby(["producer_app", "producer_qm"], dropna=False)
+        .agg(
+            distinct_consumers=("consumer_app", "nunique"),
+            distinct_consumer_qms=("consumer_qm", "nunique"),
+            distinct_target_queues=("target_queue", "nunique"),
+            edge_count=("edge_id", "count"),
+        )
+        .reset_index()
+        .sort_values(["distinct_consumers", "distinct_consumer_qms", "edge_count"], ascending=False)
+    )
+def compute_consumer_fan_in(edge_df: pd.DataFrame) -> pd.DataFrame:
+    return (
+        edge_df.groupby(["consumer_app", "consumer_qm"], dropna=False)
+        .agg(
+            distinct_producers=("producer_app", "nunique"),
+            distinct_producer_qms=("producer_qm", "nunique"),
+            distinct_source_queues=("source_queue", "nunique"),
+            edge_count=("edge_id", "count"),
+        )
+        .reset_index()
+        .sort_values(["distinct_producers", "distinct_producer_qms", "edge_count"], ascending=False)
+    )
+def compute_qm_pair_summary(edge_df: pd.DataFrame) -> pd.DataFrame:
+    return (
+        edge_df.groupby(["producer_qm", "consumer_qm"], dropna=False)
+        .agg(
+            distinct_producers=("producer_app", "nunique"),
+            distinct_consumers=("consumer_app", "nunique"),
+            distinct_source_queues=("source_queue", "nunique"),
+            distinct_target_queues=("target_queue", "nunique"),
+            edge_count=("edge_id", "count"),
+        )
+        .reset_index()
+        .sort_values("edge_count", ascending=False)
+    )
+def compute_ambiguity_summary(edge_df: pd.DataFrame) -> pd.DataFrame:
+    return (
+        edge_df.groupby(["resolution_status", "ambiguity_type"], dropna=False)
+        .agg(
+            edge_count=("edge_id", "count"),
+            flow_count=("flow_id", "nunique"),
+        )
+        .reset_index()
+        .sort_values(["edge_count", "flow_count"], ascending=False)
+    )
+flows = extract_flows_refined(df)
+flat_edges = build_flat_edge_table(flows)
+
+producer_fan_out = compute_producer_fan_out(flat_edges)
+consumer_fan_in = compute_consumer_fan_in(flat_edges)
+qm_pair_summary = compute_qm_pair_summary(flat_edges)
+ambiguity_summary = compute_ambiguity_summary(flat_edges)
