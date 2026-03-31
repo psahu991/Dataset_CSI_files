@@ -1,0 +1,230 @@
+import re
+from typing import Any, Dict, List
+
+
+def sanitize_name(value: Any) -> str:
+    """
+    Convert arbitrary names into deterministic MQ-safe uppercase tokens.
+    """
+    value = str(value).strip().upper()
+    value = re.sub(r"[^A-Z0-9]+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    return value or "UNKNOWN"
+
+
+def as_list(value):
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if value is None:
+        return []
+    if str(value).strip():
+        return [str(value).strip()]
+    return []
+
+
+def pick_preferred_queue_name(candidates: List[str], fallback: str) -> str:
+    """
+    Pick a stable queue name from validated candidates if available,
+    else use deterministic fallback.
+    """
+    cleaned = [str(v).strip() for v in candidates if str(v).strip()]
+    if cleaned:
+        return sorted(set(cleaned))[0]
+    return fallback
+
+
+def make_target_qm_name(app_id: str) -> str:
+    """
+    Canonical target QM naming: one QM per app.
+    """
+    return f"QM_{sanitize_name(app_id)}"
+
+
+def make_local_queue_name(producer_app: str, consumer_app: str) -> str:
+    """
+    Canonical consumer-side local queue.
+    """
+    return f"LQ_{sanitize_name(producer_app)}_TO_{sanitize_name(consumer_app)}"
+
+
+def make_remote_queue_name(producer_app: str, consumer_app: str) -> str:
+    """
+    Canonical producer-side remote queue object.
+    """
+    return f"RQ_{sanitize_name(producer_app)}_TO_{sanitize_name(consumer_app)}"
+
+
+def make_xmit_queue_name(source_qm: str, target_qm: str) -> str:
+    """
+    Canonical transmission queue name.
+    """
+    return f"XQ_{sanitize_name(source_qm)}_TO_{sanitize_name(target_qm)}"
+
+
+def make_sender_channel_name(source_qm: str, target_qm: str) -> str:
+    """
+    Deterministic sender channel naming.
+    """
+    return f"CH_{sanitize_name(source_qm)}_TO_{sanitize_name(target_qm)}"
+
+
+def make_receiver_channel_name(source_qm: str, target_qm: str) -> str:
+    """
+    Deterministic receiver channel naming.
+    """
+    return f"CH_{sanitize_name(target_qm)}_FROM_{sanitize_name(source_qm)}"
+
+
+def build_single_target_flow(flow_id: str, flow: Dict[str, Any], decision: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert one refined AS-IS flow + one final decision into one target flow object.
+
+    This function is deterministic:
+    - no architecture judgment here
+    - only implements already-made decisions
+    """
+
+    producer_app = str(flow.get("producer_app", "")).strip()
+    consumer_app = str(flow.get("consumer_app", "")).strip()
+
+    producer_name = str(flow.get("producer_name", "")).strip()
+    consumer_name = str(flow.get("consumer_name", "")).strip()
+
+    final_status = str(decision.get("final_status", "")).strip()
+    strategy = str(decision.get("strategy", "")).strip()
+    target_route_type = str(decision.get("target_route_type", "")).strip()
+    target_validity = str(decision.get("target_validity", "")).strip()
+
+    target_producer_qm = str(decision.get("target_producer_qm") or "").strip()
+    target_consumer_qm = str(decision.get("target_consumer_qm") or "").strip()
+
+    # Fallback to canonical app-owned QM naming if decision did not set them
+    if not target_producer_qm and producer_app:
+        target_producer_qm = make_target_qm_name(producer_app)
+
+    if not target_consumer_qm and consumer_app:
+        target_consumer_qm = make_target_qm_name(consumer_app)
+
+    validated_target_queues = as_list(decision.get("preserve_validated_target_queues", []))
+    remove_intermediate_qms = as_list(decision.get("remove_intermediate_qms", []))
+    remove_remote_queue_objects = as_list(decision.get("remove_remote_queue_objects", []))
+
+    target_design_actions = as_list(decision.get("target_design_actions", []))
+    reasons = as_list(decision.get("reasons", []))
+    warnings = as_list(decision.get("warnings", []))
+    decision_notes = as_list(decision.get("decision_notes", []))
+
+    architecture_interpretation = flow.get("architecture_interpretation")
+    routing_pattern = flow.get("routing_pattern")
+    target_requires_remote_pattern = bool(flow.get("target_requires_remote_pattern", False))
+
+    # Preferred final consumer local queue
+    canonical_local_queue = pick_preferred_queue_name(
+        validated_target_queues,
+        make_local_queue_name(producer_app, consumer_app)
+    )
+
+    # Producer-side canonical remote queue object
+    canonical_remote_queue = make_remote_queue_name(producer_app, consumer_app)
+
+    # Channel/XMIT artifacts only needed for cross-QM route
+    requires_cross_qm = (
+        target_route_type == "cross_qm_canonical"
+        or target_requires_remote_pattern
+        or (target_producer_qm and target_consumer_qm and target_producer_qm != target_consumer_qm)
+    )
+
+    if requires_cross_qm:
+        canonical_xmitq = make_xmit_queue_name(target_producer_qm, target_consumer_qm)
+        sender_channel = make_sender_channel_name(target_producer_qm, target_consumer_qm)
+        receiver_channel = make_receiver_channel_name(target_producer_qm, target_consumer_qm)
+    else:
+        canonical_xmitq = None
+        sender_channel = None
+        receiver_channel = None
+
+    target_flow = {
+        # Core identity
+        "flow_id": flow_id,
+        "producer_app": producer_app,
+        "consumer_app": consumer_app,
+        "producer_name": producer_name,
+        "consumer_name": consumer_name,
+
+        # Decision status
+        "final_status": final_status,
+        "strategy": strategy,
+        "target_route_type": target_route_type,
+        "target_validity": target_validity,
+
+        # Final ownership
+        "target_producer_qm": target_producer_qm,
+        "target_consumer_qm": target_consumer_qm,
+
+        # Canonical target objects
+        "target_local_queue": canonical_local_queue,
+        "target_remote_queue_object": canonical_remote_queue,
+        "target_xmit_queue": canonical_xmitq,
+        "target_sender_channel": sender_channel,
+        "target_receiver_channel": receiver_channel,
+
+        # Structural interpretation
+        "requires_cross_qm": requires_cross_qm,
+        "target_topology_pattern": (
+            "producer_local_remoteq_xmitq_channel_consumer_local"
+            if requires_cross_qm
+            else "single_app_single_qm_local_queue"
+        ),
+
+        # Carry-through cleanup decisions
+        "remove_intermediate_qms": remove_intermediate_qms,
+        "remove_remote_queue_objects": remove_remote_queue_objects,
+
+        # Evidence / traceability
+        "validated_target_queues": validated_target_queues,
+        "architecture_interpretation": architecture_interpretation,
+        "routing_pattern": routing_pattern,
+
+        # Explanation
+        "target_design_actions": target_design_actions,
+        "reasons": reasons,
+        "warnings": warnings,
+        "decision_notes": decision_notes,
+    }
+
+    return target_flow
+
+
+def build_optimized_target_flows(flows: Dict[str, Dict[str, Any]],
+                                 final_decisions: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Build one canonical target flow object per approved / reviewable flow.
+
+    Rules:
+    - excluded flows are skipped
+    - approved flows are emitted normally
+    - needs_review flows may still be emitted as shells if not excluded
+      so they can appear in review reports, but target provisioning should
+      normally use only final_status == 'approved'
+    """
+
+    target_flows = {}
+
+    for flow_id, flow in flows.items():
+        decision = final_decisions.get(flow_id)
+        if not decision:
+            continue
+
+        final_status = str(decision.get("final_status", "")).strip()
+
+        # Excluded flows do not become target flows
+        if final_status == "excluded" or bool(decision.get("exclude_from_target", False)):
+            continue
+
+        target_flows[flow_id] = build_single_target_flow(
+            flow_id=flow_id,
+            flow=flow,
+            decision=decision,
+        )
+
+    return target_flows
