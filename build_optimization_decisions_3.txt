@@ -1,0 +1,472 @@
+def as_list(value):
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if str(value).strip():
+        return [str(value).strip()]
+    return []
+
+
+def finalize_decision(decision):
+    """
+    Final cleanup and normalization for one decision object.
+    """
+    decision["remove_intermediate_qms"] = sorted(set(decision["remove_intermediate_qms"]))
+    decision["remove_remote_queue_objects"] = sorted(set(decision["remove_remote_queue_objects"]))
+    decision["preserve_validated_target_queues"] = sorted(set(decision["preserve_validated_target_queues"]))
+    decision["drop_unvalidated_target_queues"] = sorted(set(decision["drop_unvalidated_target_queues"]))
+    decision["reasons"] = sorted(set(decision["reasons"]))
+    decision["warnings"] = sorted(set(decision["warnings"]))
+    decision["decision_notes"] = sorted(set(decision["decision_notes"]))
+    decision["target_design_actions"] = sorted(set(decision["target_design_actions"]))
+    return decision
+
+
+def decide_flow_optimization(flow_id, flow, flow_metrics, node_metrics, routing_analysis, nodes):
+    """
+    Build a descriptive optimization decision for one refined AS-IS flow.
+
+    Key principle:
+    - refined extractor = describes AS-IS
+    - optimization decision = explains TARGET redesign
+
+    This updated version explicitly uses:
+    - neighborhood/environment separation
+    - target_requires_remote_pattern
+    - architecture_interpretation
+    - descriptive_summary
+
+    It also produces more explanation-friendly fields for:
+    - reports
+    - human override review
+    - target-flow generation
+    """
+
+    decision = {
+        "flow_id": flow_id,
+
+        # High-level target choice
+        "strategy": None,
+        "target_route_type": None,
+        "target_validity": None,
+        "confidence": flow.get("match_confidence", "LOW"),
+
+        # Structural cleanup actions
+        "remove_alias": False,
+        "remove_intermediate_qms": [],
+        "remove_remote_queue_objects": [],
+        "preserve_validated_target_queues": [],
+        "drop_unvalidated_target_queues": [],
+
+        # Ownership normalization
+        "normalize_producer_ownership": False,
+        "normalize_consumer_ownership": False,
+        "target_producer_qm": None,
+        "target_consumer_qm": None,
+
+        # Review / governance
+        "manual_review": False,
+        "exclude_from_target": False,
+
+        # Explanation fields
+        "as_is_flow_type": None,
+        "architecture_interpretation": flow.get("architecture_interpretation"),
+        "decision_notes": [],
+        "target_design_actions": [],
+        "warnings": [],
+        "reasons": [],
+
+        # Helpful classification fields
+        "target_topology_pattern": None,
+        "decision_family": None,
+        "human_override_recommended": False,
+    }
+
+    # ------------------------------------------------------------
+    # 1. Basic extracted values
+    # ------------------------------------------------------------
+    producer_app = str(flow.get("producer_app", "")).strip()
+    consumer_app = str(flow.get("consumer_app", "")).strip()
+
+    producer_qms = as_list(flow.get("producer_home_qm", ""))
+    consumer_qms = as_list(flow.get("consumer_home_qm", ""))
+    routing_qms = as_list(flow.get("routing_target_qm", ""))
+
+    producer_apps = flow.get("producer_apps", [])
+    consumer_apps = flow.get("consumer_apps", [])
+
+    producer_local_queues = as_list(flow.get("producer_local_queues", []))
+    producer_remote_queue_objects = as_list(flow.get("producer_remote_queue_objects", []))
+    remote_target_queue_names = as_list(flow.get("remote_target_queue_names", []))
+    consumer_local_queues = as_list(flow.get("consumer_local_queues", []))
+    validated_target_queues = as_list(flow.get("validated_target_queues", []))
+
+    routing_pattern = str(flow.get("routing_pattern", "")).strip()
+    resolution_status = flow.get("resolution_status", "UNRESOLVED")
+    ambiguity_type = flow.get("ambiguity_type")
+
+    has_local_only = bool(flow.get("has_local_only", False))
+    has_remote = bool(flow.get("has_remote", False))
+    has_alias = bool(flow.get("has_alias", False))
+    exact_qm_match = bool(flow.get("exact_qm_match", False))
+    exact_queue_match = bool(flow.get("exact_queue_match", False))
+
+    same_home_qm = bool(flow.get("same_home_qm", False))
+    same_neighborhood = bool(flow.get("same_neighborhood", False))
+    different_neighborhoods = bool(flow.get("different_neighborhoods", False))
+    target_requires_remote_pattern = bool(flow.get("target_requires_remote_pattern", False))
+    target_remote_reason = as_list(flow.get("target_remote_reason", []))
+
+    producer_neighborhoods = as_list(flow.get("producer_neighborhoods", []))
+    consumer_neighborhoods = as_list(flow.get("consumer_neighborhoods", []))
+
+    same_app = (
+        producer_app != ""
+        and consumer_app != ""
+        and producer_app == consumer_app
+        and not producer_app.startswith("UNKNOWN")
+        and not consumer_app.startswith("UNKNOWN")
+    )
+
+    different_apps = bool(flow.get("different_apps", producer_app != consumer_app))
+
+    incomplete = flow_metrics.get(flow_id, {}).get("incomplete", False)
+
+    analysis = routing_analysis.get(flow_id, {}) if routing_analysis else {}
+    analysis_issues = set(analysis.get("analysis_issues", []))
+    flow_issues = set(flow.get("issues", []))
+
+    decision["decision_notes"].append(
+        f"AS-IS summary: {flow.get('descriptive_summary', '')}"
+    )
+
+    # ------------------------------------------------------------
+    # 2. Hard stop cases: unknown endpoints
+    # ------------------------------------------------------------
+    if producer_app == "UNKNOWN_PRODUCER" or consumer_app == "UNKNOWN_CONSUMER":
+        decision["strategy"] = "manual_review_shell"
+        decision["decision_family"] = "not_target_ready"
+        decision["manual_review"] = True
+        decision["exclude_from_target"] = True
+        decision["human_override_recommended"] = True
+        decision["target_validity"] = "not_target_ready"
+
+        decision["reasons"].append("unknown_endpoint")
+        decision["warnings"].append("flow_has_unknown_endpoint_and_cannot_be_safely_transformed")
+        decision["decision_notes"].append(
+            "Flow excluded because at least one endpoint application could not be identified."
+        )
+
+        return finalize_decision(decision)
+
+    # ------------------------------------------------------------
+    # 3. Resolution-based gating
+    # ------------------------------------------------------------
+    if resolution_status in {"ORPHAN", "UNRESOLVED"}:
+        decision["strategy"] = "exclude_from_target"
+        decision["decision_family"] = "not_target_ready"
+        decision["exclude_from_target"] = True
+        decision["manual_review"] = True
+        decision["human_override_recommended"] = True
+        decision["target_validity"] = "not_target_ready"
+
+        decision["reasons"].append(resolution_status.lower())
+        if ambiguity_type:
+            decision["reasons"].append(ambiguity_type)
+
+        decision["warnings"].append("flow_cannot_be_confidently_mapped_to_a_valid_consumer_target")
+        decision["decision_notes"].append(
+            "Flow excluded because routing evidence is insufficient to produce a defensible target design."
+        )
+        return finalize_decision(decision)
+
+    if resolution_status in {"QM_ONLY_MATCH", "QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}:
+        decision["strategy"] = "manual_review_before_target"
+        decision["decision_family"] = "ambiguous_needs_review"
+        decision["manual_review"] = True
+        decision["exclude_from_target"] = True
+        decision["human_override_recommended"] = True
+        decision["target_validity"] = "not_target_ready"
+
+        decision["reasons"].append("ambiguous_flow")
+        decision["reasons"].append(resolution_status.lower())
+        if ambiguity_type:
+            decision["reasons"].append(ambiguity_type)
+
+        decision["warnings"].append("multiple_possible_target_interpretations_exist")
+        decision["decision_notes"].append(
+            "Human review required before generating target objects because the AS-IS flow is ambiguous."
+        )
+        return finalize_decision(decision)
+
+    # ------------------------------------------------------------
+    # 4. AS-IS flow type classification
+    # ------------------------------------------------------------
+    if has_local_only or resolution_status == "LOCAL_COMPLETE":
+        if same_app:
+            decision["as_is_flow_type"] = "same_app_local_complete"
+        else:
+            decision["as_is_flow_type"] = "cross_app_local_complete"
+    elif has_remote and len(validated_target_queues) == 1:
+        decision["as_is_flow_type"] = "single_validated_remote_target"
+    elif has_remote and len(validated_target_queues) > 1:
+        decision["as_is_flow_type"] = "multiple_validated_remote_targets"
+    elif has_remote and len(remote_target_queue_names) > 0 and len(validated_target_queues) == 0:
+        decision["as_is_flow_type"] = "unvalidated_remote_targets"
+    else:
+        decision["as_is_flow_type"] = "mixed_or_unclear"
+
+    decision["decision_notes"].append(
+        f"AS-IS flow classified as {decision['as_is_flow_type']}."
+    )
+
+    # ------------------------------------------------------------
+    # 5. Alias simplification
+    # ------------------------------------------------------------
+    if has_alias:
+        decision["remove_alias"] = True
+        decision["reasons"].append("target_alias_present")
+        decision["target_design_actions"].append("remove_alias_objects_from_target")
+        decision["decision_notes"].append(
+            "Alias objects are treated as indirection artifacts and are removed from canonical target design."
+        )
+
+    # ------------------------------------------------------------
+    # 6. Ownership normalization
+    # ------------------------------------------------------------
+    if len(producer_qms) != 1 or "multiple_producer_home_qms" in flow_issues:
+        decision["normalize_producer_ownership"] = True
+        decision["manual_review"] = True
+        decision["human_override_recommended"] = True
+        decision["reasons"].append("ambiguous_producer_home_qm")
+        decision["warnings"].append("producer_ownership_is_not_cleanly_resolved")
+
+    if len(consumer_qms) != 1 or "multiple_consumer_home_qms" in flow_issues:
+        decision["normalize_consumer_ownership"] = True
+        decision["manual_review"] = True
+        decision["human_override_recommended"] = True
+        decision["reasons"].append("ambiguous_consumer_home_qm")
+        decision["warnings"].append("consumer_ownership_is_not_cleanly_resolved")
+
+    if len(producer_apps) > 1:
+        decision["manual_review"] = True
+        decision["human_override_recommended"] = True
+        decision["reasons"].append("multiple_producer_apps")
+        decision["warnings"].append("multiple_producer_app_ids_detected_for_single_flow")
+
+    if len(consumer_apps) > 1:
+        decision["manual_review"] = True
+        decision["human_override_recommended"] = True
+        decision["reasons"].append("multiple_consumer_apps")
+        decision["warnings"].append("multiple_consumer_app_ids_detected_for_single_flow")
+
+    # Target QM names under enterprise rule: one QM per application
+    # If your target naming function exists, you can replace these two lines.
+    decision["target_producer_qm"] = f"QM_{producer_app}" if producer_app else None
+    decision["target_consumer_qm"] = f"QM_{consumer_app}" if consumer_app else None
+
+    decision["decision_notes"].append(
+        "Target ownership is normalized to one queue manager per application."
+    )
+
+    # ------------------------------------------------------------
+    # 7. Queue-target validation handling
+    # ------------------------------------------------------------
+    decision["preserve_validated_target_queues"].extend(validated_target_queues)
+
+    unvalidated = sorted(set(remote_target_queue_names) - set(validated_target_queues))
+    decision["drop_unvalidated_target_queues"].extend(unvalidated)
+
+    if validated_target_queues:
+        decision["target_design_actions"].append("preserve_validated_consumer_local_queue_binding")
+
+    if unvalidated:
+        decision["reasons"].append("unvalidated_target_queue_removed")
+        decision["warnings"].append("one_or_more_remote_target_queue_names_are_not_validated_by_consumer_local_evidence")
+        decision["target_design_actions"].append("drop_unvalidated_remote_target_references")
+
+    if producer_remote_queue_objects:
+        decision["remove_remote_queue_objects"].extend(producer_remote_queue_objects)
+        decision["reasons"].append("producer_remote_queue_objects_replaced")
+        decision["target_design_actions"].append("replace_legacy_producer_remote_queue_objects_with_canonical_target_remote_queue")
+        decision["decision_notes"].append(
+            "Producer-side remote queue objects are treated as replaceable routing artifacts in target design."
+        )
+
+    # ------------------------------------------------------------
+    # 8. Core target strategy decision
+    # ------------------------------------------------------------
+    if has_local_only or resolution_status == "LOCAL_COMPLETE":
+        decision["reasons"].append("local_complete_flow")
+
+        if target_requires_remote_pattern:
+            decision["strategy"] = "direct_route_to_consumer_qm"
+            decision["decision_family"] = "target_redesign_required"
+            decision["target_route_type"] = "cross_qm_canonical"
+            decision["target_topology_pattern"] = "producer_local_remoteq_xmitq_channel_consumer_local"
+            decision["target_validity"] = "requires_redesign"
+
+            decision["reasons"].append("target_constraint_requires_separate_qms")
+            decision["reasons"].extend(target_remote_reason)
+            decision["target_design_actions"].append("split_shared_local_pattern_into_cross_qm_target_pattern")
+
+            if same_home_qm and different_apps:
+                decision["reasons"].append("cross_app_local_flow_in_as_is")
+                decision["decision_notes"].append(
+                    "AS-IS flow is local on the same QM, but producer and consumer are different applications; "
+                    "target must separate them into app-owned QMs."
+                )
+
+            if different_neighborhoods:
+                decision["decision_notes"].append(
+                    f"Neighborhood separation supports redesign: producer_neighborhoods={producer_neighborhoods}, "
+                    f"consumer_neighborhoods={consumer_neighborhoods}."
+                )
+
+            return finalize_decision(decision)
+
+        if same_app:
+            decision["strategy"] = "canonicalize_local_flow"
+            decision["decision_family"] = "local_target_valid"
+            decision["target_route_type"] = "local_only"
+            decision["target_topology_pattern"] = "single_app_single_qm_local_queue"
+            decision["target_validity"] = "valid_target_local"
+            decision["reasons"].append("same_app_local_allowed")
+            decision["target_design_actions"].append("retain_local_pattern_under_single_app_ownership")
+        else:
+            decision["strategy"] = "direct_route_to_consumer_qm"
+            decision["decision_family"] = "target_redesign_required"
+            decision["target_route_type"] = "cross_qm_canonical"
+            decision["target_topology_pattern"] = "producer_local_remoteq_xmitq_channel_consumer_local"
+            decision["target_validity"] = "requires_redesign"
+            decision["reasons"].append("cross_app_local_flow_in_as_is")
+            decision["reasons"].append("target_constraint_requires_separate_qms")
+            decision["target_design_actions"].append("convert_local_cross_app_pattern_to_cross_qm_pattern")
+
+        return finalize_decision(decision)
+
+    if resolution_status == "INDIRECT_COMPLETE":
+        decision["strategy"] = "direct_route_to_consumer_qm"
+        decision["decision_family"] = "target_redesign_required"
+        decision["target_route_type"] = "cross_qm_canonical"
+        decision["target_topology_pattern"] = "producer_local_remoteq_xmitq_channel_consumer_local"
+        decision["target_validity"] = "requires_redesign"
+
+        decision["reasons"].append("indirect_complete_flow")
+        decision["reasons"].append("canonical_target_redesign_required")
+        decision["target_design_actions"].append("collapse_indirect_legacy_route_to_direct_consumer_qm_route")
+        decision["decision_notes"].append(
+            "AS-IS routing is complete enough to understand, but target replaces the legacy path with deterministic direct routing."
+        )
+
+    # ------------------------------------------------------------
+    # 9. Routing quality / incompleteness
+    # ------------------------------------------------------------
+    if incomplete or "incomplete_routing_path" in analysis_issues:
+        decision["strategy"] = "direct_route_to_consumer_qm"
+        decision["decision_family"] = "target_redesign_required"
+        decision["target_route_type"] = "cross_qm_canonical"
+        decision["target_topology_pattern"] = "producer_local_remoteq_xmitq_channel_consumer_local"
+        decision["target_validity"] = "requires_redesign"
+
+        decision["reasons"].append("incomplete_routing_path")
+        decision["warnings"].append("asis_path_is_incomplete_so_target_uses_canonical_routing_pattern")
+        decision["target_design_actions"].append("replace_incomplete_legacy_route")
+
+    if "routing_not_aligned_with_consumer" in analysis_issues:
+        decision["strategy"] = "direct_route_to_consumer_qm"
+        decision["decision_family"] = "target_redesign_required"
+        decision["target_route_type"] = "cross_qm_canonical"
+        decision["target_topology_pattern"] = "producer_local_remoteq_xmitq_channel_consumer_local"
+        decision["target_validity"] = "requires_redesign"
+
+        decision["reasons"].append("routing_not_aligned_with_consumer")
+        decision["target_design_actions"].append("realign_route_to_consumer_owned_qm")
+        decision["decision_notes"].append(
+            "Target routing is corrected so that the consumer reads from its own application-owned queue manager."
+        )
+
+    if "multiple_routing_target_qms" in flow_issues:
+        decision["strategy"] = "direct_route_to_consumer_qm"
+        decision["decision_family"] = "target_redesign_required"
+        decision["target_route_type"] = "cross_qm_canonical"
+        decision["target_topology_pattern"] = "producer_local_remoteq_xmitq_channel_consumer_local"
+        decision["target_validity"] = "requires_redesign"
+        decision["manual_review"] = True
+        decision["human_override_recommended"] = True
+
+        decision["reasons"].append("multiple_routing_target_qms")
+        decision["warnings"].append("multiple_routing_targets_found_in_asis")
+        decision["decision_notes"].append(
+            "Target simplifies the flow to one deterministic producer-QM to consumer-QM route."
+        )
+
+    if routing_pattern in {"multiple_unvalidated_remote_targets", "mixed_or_unclear"}:
+        decision["manual_review"] = True
+        decision["human_override_recommended"] = True
+        decision["reasons"].append("routing_pattern_requires_review")
+        decision["warnings"].append("routing_pattern_is_not_clean_even_if_target_strategy_is_clear")
+
+    # ------------------------------------------------------------
+    # 10. Remove routing-only intermediate QMs where safe
+    # ------------------------------------------------------------
+    for rq in routing_qms:
+        if rq in nodes and nodes[rq].get("routing_only", False):
+            if rq not in consumer_qms:
+                decision["remove_intermediate_qms"].append(rq)
+                decision["reasons"].append("routing_only_qm")
+                decision["target_design_actions"].append(f"remove_intermediate_routing_only_qm:{rq}")
+
+    if decision["remove_intermediate_qms"]:
+        decision["decision_notes"].append(
+            "Routing-only intermediate queue managers are removed to reduce hop count and simplify ownership."
+        )
+
+    # ------------------------------------------------------------
+    # 11. Default strategy if still unset
+    # ------------------------------------------------------------
+    if decision["strategy"] is None:
+        if same_app and not has_remote and not target_requires_remote_pattern:
+            decision["strategy"] = "canonicalize_local_flow"
+            decision["decision_family"] = "local_target_valid"
+            decision["target_route_type"] = "local_only"
+            decision["target_topology_pattern"] = "single_app_single_qm_local_queue"
+            decision["target_validity"] = "valid_target_local"
+            decision["reasons"].append("default_same_app_local_canonicalization")
+        else:
+            decision["strategy"] = "direct_route_to_consumer_qm"
+            decision["decision_family"] = "target_redesign_required"
+            decision["target_route_type"] = "cross_qm_canonical"
+            decision["target_topology_pattern"] = "producer_local_remoteq_xmitq_channel_consumer_local"
+            decision["target_validity"] = "requires_redesign"
+            decision["reasons"].append("deterministic_target_routing")
+
+    # ------------------------------------------------------------
+    # 12. Final explanation note
+    # ------------------------------------------------------------
+    if decision["target_route_type"] == "cross_qm_canonical":
+        decision["decision_notes"].append(
+            "Canonical target pattern = producer writes to a local/remote queue object on its own QM, "
+            "message is transmitted via XMITQ and sender/receiver channel pair, consumer reads from local queue on consumer QM."
+        )
+
+    return finalize_decision(decision)
+
+
+def build_optimization_decisions(flows, flow_metrics, node_metrics, routing_analysis, nodes):
+    """
+    Build AUTO baseline optimization decisions for all refined flows.
+    This is the main machine-reasoning layer before expert override.
+    """
+    decisions = {}
+
+    for flow_id, flow in flows.items():
+        decisions[flow_id] = decide_flow_optimization(
+            flow_id=flow_id,
+            flow=flow,
+            flow_metrics=flow_metrics,
+            node_metrics=node_metrics,
+            routing_analysis=routing_analysis,
+            nodes=nodes,
+        )
+
+    return decisions
