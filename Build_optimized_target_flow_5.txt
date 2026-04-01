@@ -1,0 +1,348 @@
+import re
+from typing import Any, Dict, List
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def sanitize_name(value: Any) -> str:
+    value = str(value).strip().upper()
+    value = re.sub(r"[^A-Z0-9]+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    return value or "UNKNOWN"
+
+
+def as_list(value):
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if value is None:
+        return []
+    if str(value).strip():
+        return [str(value).strip()]
+    return []
+
+
+def pick_first(values: List[str], fallback: str = "") -> str:
+    vals = [str(v).strip() for v in values if str(v).strip()]
+    vals = sorted(set(vals))
+    return vals[0] if vals else fallback
+
+
+def canonical_target_qm(app_id: str) -> str:
+    return f"QM_{sanitize_name(app_id)}"
+
+
+def make_producer_local_queue_name(producer_app: str, consumer_app: str) -> str:
+    return f"LQ_SRC_{sanitize_name(producer_app)}_TO_{sanitize_name(consumer_app)}"
+
+
+def make_consumer_local_queue_name(producer_app: str, consumer_app: str) -> str:
+    return f"LQ_TGT_{sanitize_name(producer_app)}_TO_{sanitize_name(consumer_app)}"
+
+
+def make_remote_queue_name(producer_app: str, consumer_app: str) -> str:
+    return f"RQ_{sanitize_name(producer_app)}_TO_{sanitize_name(consumer_app)}"
+
+
+def make_xmit_queue_name(source_qm: str, target_qm: str) -> str:
+    return f"XQ_{sanitize_name(source_qm)}_TO_{sanitize_name(target_qm)}"
+
+
+def make_sender_channel_name(source_qm: str, target_qm: str) -> str:
+    return f"SENDER_{sanitize_name(source_qm)}_TO_{sanitize_name(target_qm)}"
+
+
+def make_receiver_channel_name(source_qm: str, target_qm: str) -> str:
+    return f"RECEIVER_{sanitize_name(target_qm)}_FROM_{sanitize_name(source_qm)}"
+
+
+def merge_unique(values: List[str]) -> List[str]:
+    return sorted(set(v for v in values if str(v).strip()))
+
+
+# ============================================================
+# Single target-flow builder
+# ============================================================
+
+def build_single_optimized_target_flow(
+    flow_id: str,
+    flow: Dict[str, Any],
+    decision: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Build one canonical target flow object from:
+    - refined AS-IS flow
+    - final decision
+
+    Updated behavior:
+    - if decision already contains canonical target QMs, use them
+    - never carry list-valued AS-IS QMs into target ownership
+    - build one clean target pattern even when manual_review=True
+      (unless the flow is excluded)
+    """
+
+    # --------------------------------------------------------
+    # Flow identity
+    # --------------------------------------------------------
+    producer_app = str(flow.get("producer_app", "")).strip()
+    consumer_app = str(flow.get("consumer_app", "")).strip()
+    producer_name = str(flow.get("producer_name", "")).strip()
+    consumer_name = str(flow.get("consumer_name", "")).strip()
+
+    # --------------------------------------------------------
+    # Decision layer
+    # --------------------------------------------------------
+    final_status = str(decision.get("final_status", "")).strip()
+    strategy = str(decision.get("strategy", "")).strip()
+    decision_family = str(decision.get("decision_family", "")).strip()
+    target_route_type = str(decision.get("target_route_type", "")).strip()
+    target_topology_pattern = str(decision.get("target_topology_pattern", "")).strip()
+    target_validity = str(decision.get("target_validity", "")).strip()
+    confidence = str(decision.get("confidence", "")).strip()
+
+    manual_review = bool(decision.get("manual_review", False))
+    exclude_from_target = bool(decision.get("exclude_from_target", False))
+    expert_override_applied = bool(decision.get("expert_override_applied", False))
+
+    # --------------------------------------------------------
+    # Final target ownership
+    # IMPORTANT: target QMs must be scalar canonical values
+    # --------------------------------------------------------
+    target_producer_qm = decision.get("target_producer_qm")
+    target_consumer_qm = decision.get("target_consumer_qm")
+
+    if isinstance(target_producer_qm, list):
+        target_producer_qm = None
+    if isinstance(target_consumer_qm, list):
+        target_consumer_qm = None
+
+    target_producer_qm = (
+        str(target_producer_qm).strip()
+        if target_producer_qm else canonical_target_qm(producer_app)
+    )
+    target_consumer_qm = (
+        str(target_consumer_qm).strip()
+        if target_consumer_qm else canonical_target_qm(consumer_app)
+    )
+
+    # --------------------------------------------------------
+    # Evidence from AS-IS / decisions
+    # --------------------------------------------------------
+    validated_target_queues = as_list(decision.get("preserve_validated_target_queues", []))
+    remove_intermediate_qms = as_list(decision.get("remove_intermediate_qms", []))
+    remove_remote_queue_objects = as_list(decision.get("remove_remote_queue_objects", []))
+    drop_unvalidated_target_queues = as_list(decision.get("drop_unvalidated_target_queues", []))
+
+    flow_validated_target_queues = as_list(flow.get("validated_target_queues", []))
+    flow_consumer_local_queues = as_list(flow.get("consumer_local_queues", []))
+    flow_producer_local_queues = as_list(flow.get("producer_local_queues", []))
+    flow_source_queues = as_list(flow.get("source_queues", []))
+    flow_qm_path = as_list(flow.get("qm_path", []))
+
+    architecture_interpretation = flow.get("architecture_interpretation")
+    transformation_strategy = flow.get("transformation_strategy")
+    routing_pattern = flow.get("routing_pattern")
+    resolution_status = flow.get("resolution_status")
+    ambiguity_type = flow.get("ambiguity_type")
+    match_confidence = flow.get("match_confidence")
+    target_requires_remote_pattern = bool(flow.get("target_requires_remote_pattern", False))
+
+    # --------------------------------------------------------
+    # Determine local vs cross-QM target
+    # --------------------------------------------------------
+    actual_cross_qm = (
+        bool(target_producer_qm)
+        and bool(target_consumer_qm)
+        and target_producer_qm != target_consumer_qm
+    )
+
+    requires_cross_qm = (
+        target_route_type == "cross_qm_canonical"
+        or actual_cross_qm
+        or target_requires_remote_pattern
+    )
+
+    if producer_app and consumer_app and producer_app != consumer_app:
+        requires_cross_qm = True
+
+    if strategy == "canonicalize_local_flow":
+        requires_cross_qm = False
+
+    # --------------------------------------------------------
+    # Producer local queue
+    # Producer always writes locally to its own QM
+    # --------------------------------------------------------
+    producer_local_queue = pick_first(
+        flow_producer_local_queues,
+        make_producer_local_queue_name(producer_app, consumer_app)
+    )
+    if not producer_local_queue:
+        producer_local_queue = make_producer_local_queue_name(producer_app, consumer_app)
+
+    # --------------------------------------------------------
+    # Consumer local queue
+    # Consumer always reads locally from its own QM
+    # Prefer validated queue if present
+    # --------------------------------------------------------
+    preferred_consumer_local_candidates = (
+        validated_target_queues
+        or flow_validated_target_queues
+        or flow_consumer_local_queues
+    )
+
+    consumer_local_queue = pick_first(
+        preferred_consumer_local_candidates,
+        make_consumer_local_queue_name(producer_app, consumer_app)
+    )
+    if not consumer_local_queue:
+        consumer_local_queue = make_consumer_local_queue_name(producer_app, consumer_app)
+
+    # --------------------------------------------------------
+    # Cross-QM routing artifacts
+    # --------------------------------------------------------
+    remote_queue = None
+    xmit_queue = None
+    sender_channel = None
+    receiver_channel = None
+    routing_target_qm = None
+
+    if requires_cross_qm:
+        remote_queue = make_remote_queue_name(producer_app, consumer_app)
+        xmit_queue = make_xmit_queue_name(target_producer_qm, target_consumer_qm)
+        sender_channel = make_sender_channel_name(target_producer_qm, target_consumer_qm)
+        receiver_channel = make_receiver_channel_name(target_producer_qm, target_consumer_qm)
+        routing_target_qm = target_consumer_qm
+
+    # --------------------------------------------------------
+    # Path
+    # --------------------------------------------------------
+    target_qm_path = (
+        [target_producer_qm, target_consumer_qm]
+        if requires_cross_qm else
+        [target_producer_qm] if target_producer_qm else []
+    )
+
+    # --------------------------------------------------------
+    # Final target flow object
+    # --------------------------------------------------------
+    target_flow = {
+        # Core identity
+        "flow_id": flow_id,
+        "producer_app": producer_app,
+        "consumer_app": consumer_app,
+        "producer_name": producer_name,
+        "consumer_name": consumer_name,
+
+        # Decision status
+        "final_status": final_status,
+        "strategy": strategy,
+        "decision_family": decision_family,
+        "target_route_type": target_route_type if target_route_type else (
+            "cross_qm_canonical" if requires_cross_qm else "local_only"
+        ),
+        "target_topology_pattern": target_topology_pattern if target_topology_pattern else (
+            "producer_local_remote_xmit_channel_consumer_local"
+            if requires_cross_qm else
+            "single_app_single_qm_local_queue"
+        ),
+        "target_validity": target_validity,
+        "confidence": confidence,
+        "manual_review": manual_review,
+        "exclude_from_target": exclude_from_target,
+        "expert_override_applied": expert_override_applied,
+
+        # Ownership
+        "target_producer_qm": target_producer_qm,
+        "target_consumer_qm": target_consumer_qm,
+        "routing_target_qm": routing_target_qm,
+        "requires_cross_qm": requires_cross_qm,
+
+        # Queue objects
+        "producer_local_queue": producer_local_queue,
+        "consumer_local_queue": consumer_local_queue,
+        "target_local_queue": consumer_local_queue,   # compatibility alias
+
+        "remote_queue": remote_queue,
+        "target_remote_queue_object": remote_queue,   # compatibility alias
+
+        "xmit_queue": xmit_queue,
+        "target_xmit_queue": xmit_queue,              # compatibility alias
+
+        "sender_channel": sender_channel,
+        "receiver_channel": receiver_channel,
+        "target_sender_channel": sender_channel,      # compatibility alias
+        "target_receiver_channel": receiver_channel,  # compatibility alias
+
+        # Cleanup / transformation actions
+        "remove_alias": bool(decision.get("remove_alias", False)),
+        "remove_intermediate_qms": remove_intermediate_qms,
+        "remove_remote_queue_objects": remove_remote_queue_objects,
+        "preserve_validated_target_queues": validated_target_queues,
+        "drop_unvalidated_target_queues": drop_unvalidated_target_queues,
+
+        # Traceability
+        "source_qm_path": flow_qm_path,
+        "target_qm_path": target_qm_path,
+        "source_queues": flow_source_queues,
+        "source_producer_local_queues": flow_producer_local_queues,
+        "source_consumer_local_queues": flow_consumer_local_queues,
+        "source_validated_target_queues": flow_validated_target_queues,
+
+        "architecture_interpretation": architecture_interpretation,
+        "transformation_strategy": transformation_strategy,
+        "routing_pattern": routing_pattern,
+        "resolution_status": resolution_status,
+        "ambiguity_type": ambiguity_type,
+        "match_confidence": match_confidence,
+
+        # Explanation
+        "reasons": merge_unique(as_list(decision.get("reasons", []))),
+        "warnings": merge_unique(as_list(decision.get("warnings", []))),
+        "decision_notes": merge_unique(as_list(decision.get("decision_notes", []))),
+        "target_design_actions": merge_unique(as_list(decision.get("target_design_actions", []))),
+        "expert_reasons": merge_unique(as_list(decision.get("expert_reasons", []))),
+        "override_fields": merge_unique(as_list(decision.get("override_fields", []))),
+    }
+
+    return target_flow
+
+
+# ============================================================
+# Bulk builder
+# ============================================================
+
+def build_optimized_target_flows(
+    flows: Dict[str, Dict[str, Any]],
+    final_decisions: Dict[str, Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Build canonical target flows from refined AS-IS flows and final decisions.
+
+    Strict behavior:
+    - excluded flows are skipped
+    - approved flows are always built
+    - needs_review flows are also built if not excluded, so they can be validated
+      and presented as target baselines pending expert confirmation
+    """
+
+    target_flows = {}
+
+    for flow_id, flow in flows.items():
+        decision = final_decisions.get(flow_id)
+        if not decision:
+            continue
+
+        final_status = str(decision.get("final_status", "")).strip()
+        exclude_from_target = bool(decision.get("exclude_from_target", False))
+
+        if final_status == "excluded" or exclude_from_target:
+            continue
+
+        target_flows[flow_id] = build_single_optimized_target_flow(
+            flow_id=flow_id,
+            flow=flow,
+            decision=decision,
+        )
+
+    return target_flows
