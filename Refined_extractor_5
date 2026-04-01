@@ -1,0 +1,278 @@
+import pandas as pd
+from typing import Any, Dict, List
+
+
+# ============================================================
+# Utility helpers
+# ============================================================
+
+def normalize_text(value: Any) -> str:
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def normalize_q_type(value: str) -> str:
+    value = normalize_text(value)
+    if not value:
+        return ""
+    parts = [p.strip() for p in value.split(";") if p.strip()]
+    return ";".join(sorted(set(parts)))
+
+
+def pick_single_or_list(values: List[Any]) -> Any:
+    vals = sorted({normalize_text(v) for v in values if normalize_text(v)})
+    if len(vals) == 0:
+        return ""
+    if len(vals) == 1:
+        return vals[0]
+    return vals
+
+
+def unique_non_empty(series: pd.Series) -> List[str]:
+    return sorted({normalize_text(v) for v in series.tolist() if normalize_text(v)})
+
+
+def as_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [normalize_text(v) for v in value if normalize_text(v)]
+    if normalize_text(value):
+        return [normalize_text(value)]
+    return []
+
+
+def safe_unique(df: pd.DataFrame, col: str) -> List[str]:
+    if col not in df.columns:
+        return []
+    return unique_non_empty(df[col])
+
+
+# ============================================================
+# MAIN EXTRACTOR (FINAL)
+# ============================================================
+
+def extract_flows_refined_submission_grade(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+
+    df = df.copy()
+    df.columns = df.columns.str.strip()
+
+    required_cols = [
+        "Discrete Queue Name",
+        "ProducerName",
+        "ConsumerName",
+        "PrimaryAppRole",
+        "app_id",
+        "queue_manager_name",
+        "q_type",
+    ]
+
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    for col in required_cols:
+        df[col] = df[col].fillna("").astype(str).str.strip()
+
+    optional_cols = [
+        "Neighborhood",
+        "Primary Neighborhood",
+        "remote_q_mgr_name",
+        "remote_q_name",
+        "xmit_q_name",
+        "usage",
+    ]
+
+    for col in optional_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str).str.strip()
+
+    df["q_type_norm"] = df["q_type"].apply(normalize_q_type)
+    df = df.reset_index().rename(columns={"index": "record_id"})
+
+    grouped = df.groupby(["ProducerName", "ConsumerName"], dropna=False)
+
+    flows: Dict[str, Dict[str, Any]] = {}
+
+    for (producer_name, consumer_name), group in grouped:
+
+        producer_rows = group[group["PrimaryAppRole"].str.lower() == "producer"]
+        consumer_rows = group[group["PrimaryAppRole"].str.lower() == "consumer"]
+
+        producer_apps = safe_unique(producer_rows, "app_id")
+        consumer_apps = safe_unique(consumer_rows, "app_id")
+
+        producer_app = producer_apps[0] if producer_apps else "UNKNOWN_P"
+        consumer_app = consumer_apps[0] if consumer_apps else "UNKNOWN_C"
+
+        flow_id = f"{producer_app}->{consumer_app}"
+
+        # =====================================================
+        # QM inference
+        # =====================================================
+        producer_home_qm = pick_single_or_list(producer_rows["queue_manager_name"].tolist())
+        consumer_home_qm = pick_single_or_list(consumer_rows["queue_manager_name"].tolist())
+        routing_target_qm = pick_single_or_list(safe_unique(group, "remote_q_mgr_name"))
+
+        # =====================================================
+        # Queue types
+        # =====================================================
+        has_remote = any("Remote" in str(x) for x in group["q_type_norm"])
+        has_alias = any("Alias" in str(x) for x in group["q_type_norm"])
+        has_local_only = all("Local" in str(x) for x in group["q_type_norm"])
+
+        # =====================================================
+        # Neighborhood logic
+        # =====================================================
+        producer_neighborhoods = safe_unique(producer_rows, "Neighborhood")
+        consumer_neighborhoods = safe_unique(consumer_rows, "Neighborhood")
+
+        different_neighbors = set(producer_neighborhoods) != set(consumer_neighborhoods)
+        different_apps = producer_app != consumer_app
+
+        # =====================================================
+        # QM path
+        # =====================================================
+        qm_path = []
+
+        for qm in [producer_home_qm, routing_target_qm, consumer_home_qm]:
+            if isinstance(qm, list):
+                qm_val = "|".join(qm)
+            else:
+                qm_val = normalize_text(qm)
+
+            if qm_val and (not qm_path or qm_path[-1] != qm_val):
+                qm_path.append(qm_val)
+
+        # =====================================================
+        # 🔥 HEALTH CHECK (MERGED CORRECTLY)
+        # =====================================================
+        producer_qms = set(as_list(producer_home_qm))
+        consumer_qms = set(as_list(consumer_home_qm))
+        routing_qms = set(as_list(routing_target_qm))
+
+        is_as_is_broken = False
+
+        if has_remote:
+            if not routing_qms:
+                is_as_is_broken = True
+
+            elif not (routing_qms & consumer_qms):
+                if not any(qm in qm_path for qm in consumer_qms):
+                    is_as_is_broken = True
+
+        is_orphaned_producer = False
+
+        if not has_remote and not has_local_only:
+            is_orphaned_producer = True
+
+        if has_remote and not routing_qms:
+            is_orphaned_producer = True
+
+        if is_as_is_broken:
+            path_continuity = "BROKEN"
+        elif has_remote:
+            path_continuity = "INDIRECT_OR_DIRECT"
+        else:
+            path_continuity = "LOCAL"
+
+        # =====================================================
+        # Resolution (health overrides first)
+        # =====================================================
+        if is_orphaned_producer:
+            resolution_status = "ORPHAN"
+            ambiguity_type = "no_valid_target"
+            match_confidence = "LOW"
+
+        elif is_as_is_broken:
+            resolution_status = "UNRESOLVED"
+            ambiguity_type = "broken_path"
+            match_confidence = "LOW"
+
+        elif has_remote and routing_qms & consumer_qms:
+            resolution_status = "INDIRECT_COMPLETE"
+            ambiguity_type = None
+            match_confidence = "HIGH"
+
+        elif has_remote:
+            resolution_status = "QM_ONLY_MATCH"
+            ambiguity_type = "qm_only_match"
+            match_confidence = "MEDIUM"
+
+        elif has_local_only:
+            resolution_status = "LOCAL_ONLY"
+            ambiguity_type = None
+            match_confidence = "HIGH"
+
+        else:
+            resolution_status = "UNRESOLVED"
+            ambiguity_type = "insufficient_evidence"
+            match_confidence = "LOW"
+
+        # =====================================================
+        # Issues
+        # =====================================================
+        issues = []
+
+        if is_as_is_broken:
+            issues.append("broken_routing")
+
+        if is_orphaned_producer:
+            issues.append("orphan_flow")
+
+        if isinstance(producer_home_qm, list):
+            issues.append("multiple_producer_home_qms")
+
+        if isinstance(consumer_home_qm, list):
+            issues.append("multiple_consumer_home_qms")
+
+        if different_apps and producer_home_qm == consumer_home_qm:
+            issues.append("same_qm_cross_app_flow")
+
+        # =====================================================
+        # Strategy
+        # =====================================================
+        if has_local_only and (different_apps or different_neighbors):
+            transformation_strategy = "SPLIT_LOCAL_TO_REMOTE"
+        elif has_local_only:
+            transformation_strategy = "STAY_LOCAL"
+        elif has_remote and resolution_status == "INDIRECT_COMPLETE":
+            transformation_strategy = "CANONICALIZE_REMOTE"
+        else:
+            transformation_strategy = "REVIEW"
+
+        # =====================================================
+        # Final flow object
+        # =====================================================
+        flows[flow_id] = {
+            "flow_id": flow_id,
+
+            "producer_app": producer_app,
+            "consumer_app": consumer_app,
+            "producer_name": producer_name,
+            "consumer_name": consumer_name,
+
+            "producer_home_qm": producer_home_qm,
+            "consumer_home_qm": consumer_home_qm,
+            "routing_target_qm": routing_target_qm,
+            "qm_path": qm_path,
+
+            "has_remote": has_remote,
+            "has_alias": has_alias,
+            "has_local_only": has_local_only,
+
+            "resolution_status": resolution_status,
+            "ambiguity_type": ambiguity_type,
+            "match_confidence": match_confidence,
+
+            "transformation_strategy": transformation_strategy,
+
+            "health": {
+                "is_as_is_broken": is_as_is_broken,
+                "path_continuity": path_continuity,
+                "is_orphaned_producer": is_orphaned_producer,
+            },
+
+            "issues": issues,
+        }
+
+    return flows
