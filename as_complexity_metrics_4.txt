@@ -1,0 +1,478 @@
+from collections import defaultdict
+
+
+# ------------------------------------------------------------
+# 1. BUILD ADJACENCY (for path checks)
+# ------------------------------------------------------------
+
+def build_adjacency(physical_edges):
+    adj = defaultdict(set)
+    for (src, tgt) in physical_edges.keys():
+        adj[src].add(tgt)
+    return adj
+
+
+def path_exists(adj, start, target):
+    if start == target:
+        return True
+
+    visited = set()
+    stack = [start]
+
+    while stack:
+        node = stack.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+
+        for nxt in adj.get(node, []):
+            if nxt == target:
+                return True
+            if nxt not in visited:
+                stack.append(nxt)
+
+    return False
+
+
+def as_list(value):
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if str(value).strip():
+        return [str(value).strip()]
+    return []
+
+
+# ------------------------------------------------------------
+# 2. GLOBAL METRICS
+# ------------------------------------------------------------
+
+def compute_global_metrics(flows, nodes, physical_edges, logical_edges):
+    adj = build_adjacency(physical_edges)
+
+    total_qms = len(nodes)
+    total_physical_edges = len(physical_edges)
+    total_logical_edges = len(logical_edges)
+
+    routing_only_qms = sum(1 for n in nodes.values() if n["routing_only"])
+    local_only_flows = sum(1 for f in flows.values() if f.get("has_local_only", False))
+
+    local_complete_flows = 0
+    indirect_complete_flows = 0
+    ambiguous_flows = 0
+    orphan_flows = 0
+    unresolved_flows = 0
+
+    qm_only_match_flows = 0
+    queue_only_match_flows = 0
+    multi_candidate_flows = 0
+
+    high_confidence_flows = 0
+    medium_confidence_flows = 0
+    low_confidence_flows = 0
+
+    # NEW health-aligned metrics
+    broken_flows = 0
+    orphaned_producer_flows = 0
+    local_path_flows = 0
+    indirect_or_direct_path_flows = 0
+
+    # Keep graph reachability check also, but rename clearly
+    graph_unreachable_remote_flows = 0
+
+    for flow in flows.values():
+        status = flow.get("resolution_status", "UNRESOLVED")
+        confidence = flow.get("match_confidence", "LOW")
+
+        health = flow.get("health", {})
+        is_as_is_broken = flow.get("is_as_is_broken", health.get("is_as_is_broken", False))
+        is_orphaned_producer = flow.get("is_orphaned_producer", health.get("is_orphaned_producer", False))
+        path_continuity = flow.get("path_continuity", health.get("path_continuity", "UNKNOWN"))
+
+        if confidence == "HIGH":
+            high_confidence_flows += 1
+        elif confidence == "MEDIUM":
+            medium_confidence_flows += 1
+        else:
+            low_confidence_flows += 1
+
+        if status == "LOCAL_COMPLETE":
+            local_complete_flows += 1
+        elif status == "INDIRECT_COMPLETE":
+            indirect_complete_flows += 1
+        elif status == "QM_ONLY_MATCH":
+            ambiguous_flows += 1
+            qm_only_match_flows += 1
+        elif status == "QUEUE_ONLY_MATCH":
+            ambiguous_flows += 1
+            queue_only_match_flows += 1
+        elif status == "MULTI_CANDIDATE":
+            ambiguous_flows += 1
+            multi_candidate_flows += 1
+        elif status == "ORPHAN":
+            orphan_flows += 1
+        elif status == "UNRESOLVED":
+            unresolved_flows += 1
+
+        # NEW health counts
+        if is_as_is_broken:
+            broken_flows += 1
+
+        if is_orphaned_producer:
+            orphaned_producer_flows += 1
+
+        if path_continuity == "LOCAL":
+            local_path_flows += 1
+        elif path_continuity == "INDIRECT_OR_DIRECT":
+            indirect_or_direct_path_flows += 1
+
+        # Graph-based reachability check retained separately
+        if flow.get("has_remote", False):
+            cons_list = as_list(flow.get("consumer_home_qm", ""))
+            route_list = as_list(flow.get("routing_target_qm", ""))
+
+            reachable = False
+            for rq in route_list:
+                for cq in cons_list:
+                    if path_exists(adj, rq, cq):
+                        reachable = True
+                        break
+                if reachable:
+                    break
+
+            if not reachable:
+                graph_unreachable_remote_flows += 1
+
+    total_flows = len(flows)
+
+    ambiguity_ratio = ambiguous_flows / total_flows if total_flows else 0
+    orphan_ratio = orphan_flows / total_flows if total_flows else 0
+    broken_ratio = broken_flows / total_flows if total_flows else 0
+    orphaned_producer_ratio = orphaned_producer_flows / total_flows if total_flows else 0
+    graph_unreachable_ratio = graph_unreachable_remote_flows / total_flows if total_flows else 0
+
+    return {
+        "total_flows": total_flows,
+        "total_qms": total_qms,
+        "total_physical_edges": total_physical_edges,
+        "total_logical_edges": total_logical_edges,
+        "routing_only_qms": routing_only_qms,
+
+        "local_only_flows": local_only_flows,
+        "local_complete_flows": local_complete_flows,
+        "indirect_complete_flows": indirect_complete_flows,
+
+        "ambiguous_flows": ambiguous_flows,
+        "qm_only_match_flows": qm_only_match_flows,
+        "queue_only_match_flows": queue_only_match_flows,
+        "multi_candidate_flows": multi_candidate_flows,
+
+        "orphan_flows": orphan_flows,
+        "unresolved_flows": unresolved_flows,
+
+        # NEW health-based metrics
+        "broken_flows": broken_flows,
+        "orphaned_producer_flows": orphaned_producer_flows,
+        "local_path_flows": local_path_flows,
+        "indirect_or_direct_path_flows": indirect_or_direct_path_flows,
+
+        # Keep graph validation separately
+        "graph_unreachable_remote_flows": graph_unreachable_remote_flows,
+
+        "high_confidence_flows": high_confidence_flows,
+        "medium_confidence_flows": medium_confidence_flows,
+        "low_confidence_flows": low_confidence_flows,
+
+        "ambiguity_ratio": round(ambiguity_ratio, 4),
+        "orphan_ratio": round(orphan_ratio, 4),
+        "broken_ratio": round(broken_ratio, 4),
+        "orphaned_producer_ratio": round(orphaned_producer_ratio, 4),
+        "graph_unreachable_ratio": round(graph_unreachable_ratio, 4),
+    }
+
+
+# ------------------------------------------------------------
+# 3. NODE-LEVEL METRICS
+# ------------------------------------------------------------
+
+def compute_node_metrics(nodes, physical_edges):
+    fan_out = defaultdict(int)
+    fan_in = defaultdict(int)
+
+    for (src, tgt) in physical_edges.keys():
+        fan_out[src] += 1
+        fan_in[tgt] += 1
+
+    node_metrics = {}
+
+    for qm, meta in nodes.items():
+        node_metrics[qm] = {
+            "fan_out": fan_out[qm],
+            "fan_in": fan_in[qm],
+            "is_routing_only": meta["routing_only"],
+            "num_apps": len(meta["hosted_apps"]),
+            "produced_flows": len(meta["produced_flows"]),
+            "consumed_flows": len(meta["consumed_flows"]),
+            "transit_flows": len(meta.get("transit_flows", [])),
+            "node_role": (
+                "ROUTING_ONLY"
+                if meta["routing_only"]
+                else "HOSTING_AND_ROUTING" if meta.get("transit_flows")
+                else "HOSTING_ONLY"
+            ),
+        }
+
+    return node_metrics
+
+
+# ------------------------------------------------------------
+# 4. FLOW-LEVEL METRICS
+# ------------------------------------------------------------
+
+def compute_flow_metrics(flows, physical_edges):
+    adj = build_adjacency(physical_edges)
+    flow_metrics = {}
+
+    for flow_id, flow in flows.items():
+        cons_list = as_list(flow.get("consumer_home_qm", ""))
+        route_list = as_list(flow.get("routing_target_qm", ""))
+
+        health = flow.get("health", {})
+        is_as_is_broken = flow.get("is_as_is_broken", health.get("is_as_is_broken", False))
+        is_orphaned_producer = flow.get("is_orphaned_producer", health.get("is_orphaned_producer", False))
+        path_continuity = flow.get("path_continuity", health.get("path_continuity", "UNKNOWN"))
+
+        # hop count (simple estimation)
+        if not flow.get("has_remote", False):
+            hops = 0
+        else:
+            hops = 1
+            multi_hop = False
+
+            for rq in route_list:
+                for cq in cons_list:
+                    if rq != cq and path_exists(adj, rq, cq):
+                        multi_hop = True
+                        break
+                if multi_hop:
+                    break
+
+            if multi_hop:
+                hops = 2
+
+        # graph-based reachability check
+        graph_unreachable = False
+        if flow.get("has_remote", False):
+            reachable = False
+            for rq in route_list:
+                for cq in cons_list:
+                    if path_exists(adj, rq, cq):
+                        reachable = True
+                        break
+                if reachable:
+                    break
+            graph_unreachable = not reachable
+
+        status = flow.get("resolution_status", "UNRESOLVED")
+        ambiguity_type = flow.get("ambiguity_type")
+        match_confidence = flow.get("match_confidence", "LOW")
+
+        ambiguous = status in {"QM_ONLY_MATCH", "QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}
+
+        flow_metrics[flow_id] = {
+            "hops": hops,
+            "has_remote": flow.get("has_remote", False),
+            "has_alias": flow.get("has_alias", False),
+            "local_only": flow.get("has_local_only", False),
+
+            # NEW
+            "is_as_is_broken": is_as_is_broken,
+            "path_continuity": path_continuity,
+            "is_orphaned_producer": is_orphaned_producer,
+
+            # graph view kept separately
+            "graph_unreachable": graph_unreachable,
+
+            "ambiguous": ambiguous,
+            "resolution_status": status,
+            "ambiguity_type": ambiguity_type,
+            "match_confidence": match_confidence,
+            "exact_qm_match": flow.get("exact_qm_match", False),
+            "exact_queue_match": flow.get("exact_queue_match", False),
+            "record_count": flow.get("record_count", 0),
+            "distinct_flow_count": flow.get("distinct_flow_count", 1),
+            "routing_pattern": flow.get("routing_pattern", ""),
+            "transformation_strategy": flow.get("transformation_strategy", ""),
+            "architecture_interpretation": flow.get("architecture_interpretation", ""),
+        }
+
+    return flow_metrics
+
+
+# ------------------------------------------------------------
+# 5. COMBINED COMPLEXITY MATRIX
+# ------------------------------------------------------------
+
+def build_complexity_matrix(flows, nodes, physical_edges, logical_edges):
+    global_metrics = compute_global_metrics(
+        flows, nodes, physical_edges, logical_edges
+    )
+
+    node_metrics = compute_node_metrics(nodes, physical_edges)
+    flow_metrics = compute_flow_metrics(flows, physical_edges)
+
+    return {
+        "global": global_metrics,
+        "nodes": node_metrics,
+        "flows": flow_metrics
+    }
+
+
+# ------------------------------------------------------------
+# 6. BUILD QM GRAPH DATA
+# ------------------------------------------------------------
+
+def build_qm_graph_data(flows):
+    """
+    Build QM graph structures from refined flows.
+
+    Returns:
+    - nodes: dict keyed by QM
+    - physical_edges: dict keyed by (src_qm, tgt_qm)
+    - logical_edges: dict keyed by (producer_app, consumer_app)
+    """
+
+    def as_list(value):
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if str(value).strip():
+            return [str(value).strip()]
+        return []
+
+    nodes = defaultdict(lambda: {
+        "hosted_apps": set(),
+        "produced_flows": set(),
+        "consumed_flows": set(),
+        "transit_flows": set(),
+        "routing_only": True,
+    })
+
+    physical_edges = defaultdict(lambda: {
+        "flow_ids": set(),
+        "producer_apps": set(),
+        "consumer_apps": set(),
+        "source_queues": set(),
+        "target_queues": set(),
+        "edge_count": 0,
+    })
+
+    logical_edges = defaultdict(lambda: {
+        "flow_ids": set(),
+        "producer_qms": set(),
+        "consumer_qms": set(),
+        "routing_target_qms": set(),
+        "distinct_flow_count": 0,
+    })
+
+    for flow_id, flow in flows.items():
+        producer_app = flow.get("producer_app", "")
+        consumer_app = flow.get("consumer_app", "")
+
+        producer_qms = as_list(flow.get("producer_home_qm", ""))
+        consumer_qms = as_list(flow.get("consumer_home_qm", ""))
+        routing_target_qms = as_list(flow.get("routing_target_qm", ""))
+
+        source_queues = set(flow.get("source_queues", []))
+        target_queues = set(flow.get("target_queues", []))
+
+        for qm in producer_qms:
+            nodes[qm]["hosted_apps"].add(producer_app)
+            nodes[qm]["produced_flows"].add(flow_id)
+            if producer_app:
+                nodes[qm]["routing_only"] = False
+
+        for qm in consumer_qms:
+            nodes[qm]["hosted_apps"].add(consumer_app)
+            nodes[qm]["consumed_flows"].add(flow_id)
+            if consumer_app:
+                nodes[qm]["routing_only"] = False
+
+        logical_key = (producer_app, consumer_app)
+        logical_edges[logical_key]["flow_ids"].add(flow_id)
+        logical_edges[logical_key]["producer_qms"].update(producer_qms)
+        logical_edges[logical_key]["consumer_qms"].update(consumer_qms)
+        logical_edges[logical_key]["routing_target_qms"].update(routing_target_qms)
+        logical_edges[logical_key]["distinct_flow_count"] += flow.get("distinct_flow_count", 1)
+
+        if flow.get("has_remote", False):
+            for src_qm in producer_qms:
+                for tgt_qm in routing_target_qms:
+                    if not src_qm or not tgt_qm:
+                        continue
+
+                    edge_key = (src_qm, tgt_qm)
+                    physical_edges[edge_key]["flow_ids"].add(flow_id)
+                    physical_edges[edge_key]["producer_apps"].add(producer_app)
+                    physical_edges[edge_key]["consumer_apps"].add(consumer_app)
+                    physical_edges[edge_key]["source_queues"].update(source_queues)
+                    physical_edges[edge_key]["target_queues"].update(target_queues)
+                    physical_edges[edge_key]["edge_count"] += 1
+
+            for route_qm in routing_target_qms:
+                for cons_qm in consumer_qms:
+                    if not route_qm or not cons_qm or route_qm == cons_qm:
+                        continue
+
+                    edge_key = (route_qm, cons_qm)
+                    physical_edges[edge_key]["flow_ids"].add(flow_id)
+                    physical_edges[edge_key]["producer_apps"].add(producer_app)
+                    physical_edges[edge_key]["consumer_apps"].add(consumer_app)
+                    physical_edges[edge_key]["source_queues"].update(source_queues)
+                    physical_edges[edge_key]["target_queues"].update(target_queues)
+                    physical_edges[edge_key]["edge_count"] += 1
+
+                    nodes[route_qm]["transit_flows"].add(flow_id)
+
+        elif flow.get("has_local_only", False):
+            pass
+
+    for qm, meta in nodes.items():
+        if meta["hosted_apps"]:
+            meta["routing_only"] = False
+        else:
+            meta["routing_only"] = True
+
+    nodes = {
+        qm: {
+            "hosted_apps": sorted(v["hosted_apps"]),
+            "produced_flows": sorted(v["produced_flows"]),
+            "consumed_flows": sorted(v["consumed_flows"]),
+            "transit_flows": sorted(v["transit_flows"]),
+            "routing_only": v["routing_only"],
+        }
+        for qm, v in nodes.items()
+    }
+
+    physical_edges = {
+        edge: {
+            "flow_ids": sorted(v["flow_ids"]),
+            "producer_apps": sorted(v["producer_apps"]),
+            "consumer_apps": sorted(v["consumer_apps"]),
+            "source_queues": sorted(v["source_queues"]),
+            "target_queues": sorted(v["target_queues"]),
+            "edge_count": v["edge_count"],
+        }
+        for edge, v in physical_edges.items()
+    }
+
+    logical_edges = {
+        edge: {
+            "flow_ids": sorted(v["flow_ids"]),
+            "producer_qms": sorted(v["producer_qms"]),
+            "consumer_qms": sorted(v["consumer_qms"]),
+            "routing_target_qms": sorted(v["routing_target_qms"]),
+            "distinct_flow_count": v["distinct_flow_count"],
+        }
+        for edge, v in logical_edges.items()
+    }
+
+    return nodes, physical_edges, logical_edges
