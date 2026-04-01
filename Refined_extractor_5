@@ -13,6 +13,11 @@ def normalize_text(value: Any) -> str:
 
 
 def normalize_q_type(value: str) -> str:
+    """
+    Normalize queue types like:
+    'Remote', 'Alias', 'Remote;Alias', 'Local'
+    -> sorted unique semicolon-separated string
+    """
     value = normalize_text(value)
     if not value:
         return ""
@@ -21,6 +26,12 @@ def normalize_q_type(value: str) -> str:
 
 
 def pick_single_or_list(values: List[Any]) -> Any:
+    """
+    Return:
+    - "" if no non-empty values
+    - single value if exactly one unique non-empty value
+    - sorted list if multiple unique values
+    """
     vals = sorted({normalize_text(v) for v in values if normalize_text(v)})
     if len(vals) == 0:
         return ""
@@ -48,10 +59,31 @@ def safe_unique(df: pd.DataFrame, col: str) -> List[str]:
 
 
 # ============================================================
-# MAIN EXTRACTOR (FINAL)
+# Main extractor
 # ============================================================
 
 def extract_flows_refined_submission_grade(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+    """
+    Submission-grade refined extractor for the MQ topology hackathon.
+
+    Goals:
+    1. Describe AS-IS truth faithfully
+    2. Surface ambiguity explicitly
+    3. Support target-state reasoning
+    4. Feed later stages:
+       - build_optimization_decisions(...)
+       - expert review / overrides
+       - build_optimized_target_flows(...)
+       - complexity analysis
+       - explanation report
+
+    Core principles aligned to hackathon:
+    - One QM per application in target state
+    - Cross-app or cross-environment communication must become cross-QM target routing
+    - Consumers read from local queues
+    - Producer-side remote queue objects are routing artifacts, not final business targets
+    - Input data is authoritative, but may be messy or incomplete
+    """
 
     df = df.copy()
     df.columns = df.columns.str.strip()
@@ -70,6 +102,7 @@ def extract_flows_refined_submission_grade(df: pd.DataFrame) -> Dict[str, Dict[s
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
+    # Normalize core columns
     for col in required_cols:
         df[col] = df[col].fillna("").astype(str).str.strip()
 
@@ -81,7 +114,6 @@ def extract_flows_refined_submission_grade(df: pd.DataFrame) -> Dict[str, Dict[s
         "xmit_q_name",
         "usage",
     ]
-
     for col in optional_cols:
         if col in df.columns:
             df[col] = df[col].fillna("").astype(str).str.strip()
@@ -94,69 +126,358 @@ def extract_flows_refined_submission_grade(df: pd.DataFrame) -> Dict[str, Dict[s
     flows: Dict[str, Dict[str, Any]] = {}
 
     for (producer_name, consumer_name), group in grouped:
-
-        producer_rows = group[group["PrimaryAppRole"].str.lower() == "producer"]
-        consumer_rows = group[group["PrimaryAppRole"].str.lower() == "consumer"]
+        producer_rows = group[group["PrimaryAppRole"].str.lower() == "producer"].copy()
+        consumer_rows = group[group["PrimaryAppRole"].str.lower() == "consumer"].copy()
 
         producer_apps = safe_unique(producer_rows, "app_id")
         consumer_apps = safe_unique(consumer_rows, "app_id")
 
-        producer_app = producer_apps[0] if producer_apps else "UNKNOWN_P"
-        consumer_app = consumer_apps[0] if consumer_apps else "UNKNOWN_C"
+        producer_app = (
+            producer_apps[0]
+            if len(producer_apps) == 1
+            else "|".join(producer_apps) if producer_apps else "UNKNOWN_PRODUCER"
+        )
+        consumer_app = (
+            consumer_apps[0]
+            if len(consumer_apps) == 1
+            else "|".join(consumer_apps) if consumer_apps else "UNKNOWN_CONSUMER"
+        )
 
         flow_id = f"{producer_app}->{consumer_app}"
 
-        # =====================================================
-        # QM inference
-        # =====================================================
-        producer_home_qm = pick_single_or_list(producer_rows["queue_manager_name"].tolist())
-        consumer_home_qm = pick_single_or_list(consumer_rows["queue_manager_name"].tolist())
-        routing_target_qm = pick_single_or_list(safe_unique(group, "remote_q_mgr_name"))
+        # --------------------------------------------------------
+        # Neighborhood / environment context
+        # --------------------------------------------------------
+        producer_neighborhoods = sorted(
+            set(safe_unique(producer_rows, "Neighborhood")) |
+            set(safe_unique(producer_rows, "Primary Neighborhood"))
+        )
+        consumer_neighborhoods = sorted(
+            set(safe_unique(consumer_rows, "Neighborhood")) |
+            set(safe_unique(consumer_rows, "Primary Neighborhood"))
+        )
 
-        # =====================================================
-        # Queue types
-        # =====================================================
-        has_remote = any("Remote" in str(x) for x in group["q_type_norm"])
-        has_alias = any("Alias" in str(x) for x in group["q_type_norm"])
-        has_local_only = all("Local" in str(x) for x in group["q_type_norm"])
+        same_neighborhood = bool(set(producer_neighborhoods) & set(consumer_neighborhoods))
+        different_neighborhoods = not same_neighborhood if (producer_neighborhoods or consumer_neighborhoods) else False
 
-        # =====================================================
-        # Neighborhood logic
-        # =====================================================
-        producer_neighborhoods = safe_unique(producer_rows, "Neighborhood")
-        consumer_neighborhoods = safe_unique(consumer_rows, "Neighborhood")
+        # --------------------------------------------------------
+        # Queue type decomposition
+        # --------------------------------------------------------
+        remote_rows = group[group["q_type_norm"].str.contains("Remote", case=False, na=False)].copy()
+        alias_rows = group[group["q_type_norm"].str.contains("Alias", case=False, na=False)].copy()
+        local_rows = group[group["q_type_norm"].str.contains("Local", case=False, na=False)].copy()
 
-        different_neighbors = set(producer_neighborhoods) != set(consumer_neighborhoods)
+        producer_local_rows = producer_rows[
+            producer_rows["q_type_norm"].str.contains("Local", case=False, na=False)
+        ].copy()
+
+        producer_remote_rows = producer_rows[
+            producer_rows["q_type_norm"].str.contains("Remote", case=False, na=False)
+        ].copy()
+
+        consumer_local_rows = consumer_rows[
+            consumer_rows["q_type_norm"].str.contains("Local", case=False, na=False)
+        ].copy()
+
+        # --------------------------------------------------------
+        # Home QM derivation
+        # Prefer producer/consumer rows that are Local/Remote, not Alias-only
+        # --------------------------------------------------------
+        producer_home_candidates = producer_rows[
+            producer_rows["q_type_norm"].str.contains("Remote|Local", case=False, na=False)
+        ]["queue_manager_name"].tolist()
+        if not producer_home_candidates:
+            producer_home_candidates = producer_rows["queue_manager_name"].tolist()
+
+        consumer_home_candidates = consumer_rows[
+            consumer_rows["q_type_norm"].str.contains("Remote|Local", case=False, na=False)
+        ]["queue_manager_name"].tolist()
+        if not consumer_home_candidates:
+            consumer_home_candidates = consumer_rows["queue_manager_name"].tolist()
+
+        producer_home_qm = pick_single_or_list(producer_home_candidates)
+        consumer_home_qm = pick_single_or_list(consumer_home_candidates)
+
+        # --------------------------------------------------------
+        # Routing target QM / transport evidence
+        # --------------------------------------------------------
+        routing_target_qm = pick_single_or_list(safe_unique(remote_rows, "remote_q_mgr_name"))
+        xmit_queue_names = safe_unique(remote_rows, "xmit_q_name")
+        usage_values = safe_unique(group, "usage")
+
+        # --------------------------------------------------------
+        # Queue role separation
+        # --------------------------------------------------------
+        producer_local_queues = safe_unique(producer_local_rows, "Discrete Queue Name")
+        producer_remote_queue_objects = safe_unique(producer_remote_rows, "Discrete Queue Name")
+        remote_target_queue_names = safe_unique(producer_remote_rows, "remote_q_name")
+        consumer_local_queues = safe_unique(consumer_local_rows, "Discrete Queue Name")
+        alias_target_queues = safe_unique(alias_rows, "Discrete Queue Name")
+
+        referenced_target_queues = sorted(
+            set(remote_target_queue_names) |
+            set(alias_target_queues) |
+            set(consumer_local_queues)
+        )
+
+        validated_target_queues = sorted(
+            set(remote_target_queue_names) & set(consumer_local_queues)
+        )
+
+        source_queues = sorted(set(producer_local_queues) | set(producer_remote_queue_objects))
+        target_queues = referenced_target_queues
+
+        # --------------------------------------------------------
+        # Queue type flags
+        # --------------------------------------------------------
+        has_remote = not remote_rows.empty
+        has_alias = not alias_rows.empty
+        has_local_only = (not local_rows.empty and remote_rows.empty)
+
+        source_queue_types = safe_unique(
+            producer_rows[
+                producer_rows["q_type_norm"].str.contains("Remote|Local", case=False, na=False)
+            ],
+            "q_type_norm"
+        )
+
+        target_queue_types = sorted(
+            set(safe_unique(alias_rows, "q_type_norm")) |
+            set(safe_unique(
+                consumer_rows[
+                    consumer_rows["q_type_norm"].str.contains("Local", case=False, na=False)
+                ],
+                "q_type_norm"
+            ))
+        )
+
+        # --------------------------------------------------------
+        # Queue pairs for traceability / later graph logic
+        # --------------------------------------------------------
+        alias_queue_names = set(alias_target_queues)
+        consumer_local_queue_names = set(consumer_local_queues)
+        queue_pairs = []
+        seen_pairs = set()
+
+        for _, row in remote_rows.iterrows():
+            src_q = normalize_text(row["Discrete Queue Name"])
+            tgt_q = normalize_text(row["remote_q_name"]) if "remote_q_name" in row else ""
+            src_qm = normalize_text(row["queue_manager_name"])
+            tgt_qm = normalize_text(row["remote_q_mgr_name"]) if "remote_q_mgr_name" in row else ""
+            xmit_q = normalize_text(row["xmit_q_name"]) if "xmit_q_name" in row else ""
+            usage = normalize_text(row["usage"]) if "usage" in row else ""
+
+            pair_key = (src_q, tgt_q, src_qm, tgt_qm, xmit_q)
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+
+            if tgt_q in consumer_local_queue_names:
+                target_q_type = "Local"
+                pair_status = "validated_consumer_target"
+            elif tgt_q in alias_queue_names:
+                target_q_type = "Alias"
+                pair_status = "alias_target"
+            elif tgt_q:
+                target_q_type = "Unknown"
+                pair_status = "unvalidated_target"
+            else:
+                target_q_type = "Unknown"
+                pair_status = "missing_target_name"
+
+            queue_pairs.append({
+                "source_queue_object": src_q,
+                "referenced_target_queue": tgt_q,
+                "source_queue_type": normalize_text(row["q_type_norm"]),
+                "target_queue_type": target_q_type,
+                "pair_status": pair_status,
+                "source_qm": src_qm,
+                "target_qm": tgt_qm,
+                "xmit_queue_name": xmit_q,
+                "usage": usage,
+            })
+
+        # --------------------------------------------------------
+        # Candidate target information
+        # --------------------------------------------------------
+        candidate_consumer_qms = sorted(set(as_list(consumer_home_qm)))
+        candidate_consumer_queues = sorted(set(consumer_local_queues))
+
+        routing_target_qms = set(as_list(routing_target_qm))
+        consumer_home_qms = set(as_list(consumer_home_qm))
+
+        exact_qm_match = bool(routing_target_qms & consumer_home_qms)
+        exact_queue_match = bool(set(remote_target_queue_names) & set(consumer_local_queues))
+
+        # --------------------------------------------------------
+        # Coarse QM path representation
+        # --------------------------------------------------------
+        qm_path = []
+        for qm in [producer_home_qm, routing_target_qm, consumer_home_qm]:
+            qm_repr = "|".join(qm) if isinstance(qm, list) else normalize_text(qm)
+            if qm_repr and (not qm_path or qm_path[-1] != qm_repr):
+                qm_path.append(qm_repr)
+
+        # --------------------------------------------------------
+        # Constraint / target-state reasoning
+        # --------------------------------------------------------
+        same_home_qm = bool(set(as_list(producer_home_qm)) & set(as_list(consumer_home_qm)))
         different_apps = producer_app != consumer_app
 
-        # =====================================================
-        # QM path
-        # =====================================================
-        qm_path = []
+        target_requires_separation = different_apps or different_neighborhoods
+        target_requires_remote_pattern = target_requires_separation
 
-        for qm in [producer_home_qm, routing_target_qm, consumer_home_qm]:
-            if isinstance(qm, list):
-                qm_val = "|".join(qm)
+        target_remote_reason = []
+        if different_apps:
+            target_remote_reason.append("different_app_ids_require_one_qm_per_app")
+        if different_neighborhoods:
+            target_remote_reason.append("different_neighborhoods_indicate_environment_separation")
+        if has_local_only and same_home_qm and target_requires_separation:
+            target_remote_reason.append("asis_local_flow_must_be_split_into_cross_qm_target_flow")
+        if has_remote:
+            target_remote_reason.append("asis_already_contains_remote_pattern")
+
+        # --------------------------------------------------------
+        # Resolution / ambiguity classification
+        # --------------------------------------------------------
+        issues = []
+
+        if has_remote:
+            issues.append("cross_qm_flow")
+        if has_alias:
+            issues.append("target_alias_present")
+        if has_local_only:
+            issues.append("local_only_flow")
+
+        if producer_home_qm == "" or consumer_home_qm == "":
+            issues.append("missing_home_qm")
+
+        if isinstance(producer_home_qm, list):
+            issues.append("multiple_producer_home_qms")
+        if isinstance(consumer_home_qm, list):
+            issues.append("multiple_consumer_home_qms")
+        if isinstance(routing_target_qm, list):
+            issues.append("multiple_routing_target_qms")
+
+        if len(producer_apps) > 1:
+            issues.append("multiple_producer_apps")
+        if len(consumer_apps) > 1:
+            issues.append("multiple_consumer_apps")
+
+        if has_local_only and same_home_qm and different_apps:
+            issues.append("same_qm_cross_app_flow_in_asis")
+
+        if has_local_only and same_home_qm and different_neighborhoods:
+            issues.append("same_qm_cross_neighborhood_flow_in_asis")
+
+        if target_requires_remote_pattern and not has_remote:
+            issues.append("target_needs_remote_pattern_even_if_asis_is_local")
+
+        if has_local_only:
+            resolution_status = "LOCAL_COMPLETE"
+            ambiguity_type = None
+            match_confidence = "HIGH"
+        elif has_remote:
+            if exact_qm_match and exact_queue_match:
+                resolution_status = "INDIRECT_COMPLETE"
+                ambiguity_type = None
+                match_confidence = "HIGH"
+            elif exact_qm_match and not exact_queue_match:
+                resolution_status = "QM_ONLY_MATCH"
+                ambiguity_type = "qm_only_match"
+                match_confidence = "MEDIUM"
+            elif exact_queue_match and not exact_qm_match:
+                resolution_status = "QUEUE_ONLY_MATCH"
+                ambiguity_type = "queue_only_match"
+                match_confidence = "MEDIUM"
+            elif len(candidate_consumer_qms) > 1 or len(candidate_consumer_queues) > 1:
+                resolution_status = "MULTI_CANDIDATE"
+                ambiguity_type = "multiple_possible_targets"
+                match_confidence = "LOW"
             else:
-                qm_val = normalize_text(qm)
+                resolution_status = "ORPHAN"
+                ambiguity_type = "no_confirmed_target"
+                match_confidence = "LOW"
+        else:
+            resolution_status = "UNRESOLVED"
+            ambiguity_type = "insufficient_evidence"
+            match_confidence = "LOW"
 
-            if qm_val and (not qm_path or qm_path[-1] != qm_val):
-                qm_path.append(qm_val)
+        if resolution_status in {"QM_ONLY_MATCH", "QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}:
+            issues.append("ambiguous_flow")
+        if resolution_status == "ORPHAN":
+            issues.append("orphan_flow")
 
-        # =====================================================
-        # 🔥 HEALTH CHECK (MERGED CORRECTLY)
-        # =====================================================
+        # --------------------------------------------------------
+        # Routing pattern label
+        # --------------------------------------------------------
+        if has_local_only:
+            routing_pattern = "local_only"
+        elif len(validated_target_queues) == 1 and len(remote_target_queue_names) >= 1:
+            routing_pattern = "single_validated_remote_target"
+        elif len(validated_target_queues) > 1:
+            routing_pattern = "multiple_validated_remote_targets"
+        elif len(remote_target_queue_names) > 1 and len(validated_target_queues) == 0:
+            routing_pattern = "multiple_unvalidated_remote_targets"
+        elif len(remote_target_queue_names) == 1 and len(validated_target_queues) == 0:
+            routing_pattern = "single_unvalidated_remote_target"
+        else:
+            routing_pattern = "mixed_or_unclear"
+
+        # --------------------------------------------------------
+        # Transformation strategy
+        # --------------------------------------------------------
+        if has_local_only and target_requires_separation:
+            transformation_strategy = "SPLIT_LOCAL_TO_REMOTE"
+        elif has_local_only and not target_requires_separation:
+            transformation_strategy = "STAY_LOCAL_SAME_APP"
+        elif has_remote and resolution_status == "INDIRECT_COMPLETE":
+            transformation_strategy = "CANONICALIZE_EXISTING_REMOTE"
+        elif has_remote:
+            transformation_strategy = "REVIEW_OR_REDESIGN_REMOTE"
+        else:
+            transformation_strategy = "UNRESOLVED_PATTERN"
+
+        # --------------------------------------------------------
+        # High-level architecture interpretation
+        # --------------------------------------------------------
+        if has_local_only and target_requires_remote_pattern:
+            architecture_interpretation = "ASIS_LOCAL_BUT_TARGET_MUST_BE_REMOTE"
+        elif has_local_only:
+            architecture_interpretation = "PURE_LOCAL_FLOW"
+        elif has_remote and exact_qm_match and exact_queue_match:
+            architecture_interpretation = "REMOTE_FLOW_CONFIRMED"
+        elif has_remote:
+            architecture_interpretation = "REMOTE_FLOW_PARTIALLY_CONFIRMED"
+        else:
+            architecture_interpretation = "UNRESOLVED_FLOW"
+
+        descriptive_summary = (
+            f"Flow {flow_id}: producer_app={producer_app}, consumer_app={consumer_app}, "
+            f"producer_home_qm={producer_home_qm}, consumer_home_qm={consumer_home_qm}, "
+            f"has_remote={has_remote}, has_alias={has_alias}, has_local_only={has_local_only}, "
+            f"different_apps={different_apps}, different_neighborhoods={different_neighborhoods}, "
+            f"target_requires_separation={target_requires_separation}, "
+            f"resolution_status={resolution_status}, routing_pattern={routing_pattern}."
+        )
+
+        # --------------------------------------------------------
+        # Health / Path Continuity Analysis (MERGED)
+        # --------------------------------------------------------
         producer_qms = set(as_list(producer_home_qm))
         consumer_qms = set(as_list(consumer_home_qm))
-        routing_qms = set(as_list(routing_target_qm))
+        routing_target_qms = set(as_list(routing_target_qm))
 
         is_as_is_broken = False
 
         if has_remote:
-            if not routing_qms:
+            # No routing target QM at all
+            if not routing_target_qms:
                 is_as_is_broken = True
 
-            elif not (routing_qms & consumer_qms):
+            # Routing QM does not line up with consumer QM
+            elif not (routing_target_qms & consumer_qms):
+                # Allow indirect continuity if consumer QM is still visible in qm_path
                 if not any(qm in qm_path for qm in consumer_qms):
                     is_as_is_broken = True
 
@@ -165,7 +486,7 @@ def extract_flows_refined_submission_grade(df: pd.DataFrame) -> Dict[str, Dict[s
         if not has_remote and not has_local_only:
             is_orphaned_producer = True
 
-        if has_remote and not routing_qms:
+        if has_remote and not routing_target_qms:
             is_orphaned_producer = True
 
         if is_as_is_broken:
@@ -175,104 +496,173 @@ def extract_flows_refined_submission_grade(df: pd.DataFrame) -> Dict[str, Dict[s
         else:
             path_continuity = "LOCAL"
 
-        # =====================================================
-        # Resolution (health overrides first)
-        # =====================================================
-        if is_orphaned_producer:
-            resolution_status = "ORPHAN"
-            ambiguity_type = "no_valid_target"
-            match_confidence = "LOW"
-
-        elif is_as_is_broken:
-            resolution_status = "UNRESOLVED"
-            ambiguity_type = "broken_path"
-            match_confidence = "LOW"
-
-        elif has_remote and routing_qms & consumer_qms:
-            resolution_status = "INDIRECT_COMPLETE"
-            ambiguity_type = None
-            match_confidence = "HIGH"
-
-        elif has_remote:
-            resolution_status = "QM_ONLY_MATCH"
-            ambiguity_type = "qm_only_match"
-            match_confidence = "MEDIUM"
-
-        elif has_local_only:
-            resolution_status = "LOCAL_ONLY"
-            ambiguity_type = None
-            match_confidence = "HIGH"
-
-        else:
-            resolution_status = "UNRESOLVED"
-            ambiguity_type = "insufficient_evidence"
-            match_confidence = "LOW"
-
-        # =====================================================
-        # Issues
-        # =====================================================
-        issues = []
-
         if is_as_is_broken:
-            issues.append("broken_routing")
-
+            issues.append("broken_path_continuity")
         if is_orphaned_producer:
-            issues.append("orphan_flow")
+            issues.append("orphaned_producer")
 
-        if isinstance(producer_home_qm, list):
-            issues.append("multiple_producer_home_qms")
-
-        if isinstance(consumer_home_qm, list):
-            issues.append("multiple_consumer_home_qms")
-
-        if different_apps and producer_home_qm == consumer_home_qm:
-            issues.append("same_qm_cross_app_flow")
-
-        # =====================================================
-        # Strategy
-        # =====================================================
-        if has_local_only and (different_apps or different_neighbors):
-            transformation_strategy = "SPLIT_LOCAL_TO_REMOTE"
-        elif has_local_only:
-            transformation_strategy = "STAY_LOCAL"
-        elif has_remote and resolution_status == "INDIRECT_COMPLETE":
-            transformation_strategy = "CANONICALIZE_REMOTE"
-        else:
-            transformation_strategy = "REVIEW"
-
-        # =====================================================
-        # Final flow object
-        # =====================================================
+        # --------------------------------------------------------
+        # Final structured flow object
+        # --------------------------------------------------------
         flows[flow_id] = {
             "flow_id": flow_id,
 
-            "producer_app": producer_app,
-            "consumer_app": consumer_app,
-            "producer_name": producer_name,
-            "consumer_name": consumer_name,
+            # ----------------------------------------------------
+            # Producer / consumer identity
+            # ----------------------------------------------------
+            "producer": {
+                "name": producer_name,
+                "app_id": producer_app,
+                "home_qm": producer_home_qm,
+                "app_ids": producer_apps,
+                "neighborhoods": producer_neighborhoods,
+            },
+            "consumer": {
+                "name": consumer_name,
+                "app_id": consumer_app,
+                "home_qm": consumer_home_qm,
+                "app_ids": consumer_apps,
+                "neighborhoods": consumer_neighborhoods,
+            },
 
-            "producer_home_qm": producer_home_qm,
-            "consumer_home_qm": consumer_home_qm,
-            "routing_target_qm": routing_target_qm,
-            "qm_path": qm_path,
+            # ----------------------------------------------------
+            # AS-IS truth
+            # ----------------------------------------------------
+            "as_is": {
+                "same_home_qm": same_home_qm,
+                "routing_target_qm": routing_target_qm,
+                "qm_path": qm_path,
 
-            "has_remote": has_remote,
-            "has_alias": has_alias,
-            "has_local_only": has_local_only,
+                "has_remote": has_remote,
+                "has_alias": has_alias,
+                "has_local_only": has_local_only,
 
-            "resolution_status": resolution_status,
-            "ambiguity_type": ambiguity_type,
-            "match_confidence": match_confidence,
+                "source_queues": source_queues,
+                "target_queues": target_queues,
 
-            "transformation_strategy": transformation_strategy,
+                "producer_local_queues": producer_local_queues,
+                "producer_remote_queue_objects": producer_remote_queue_objects,
+                "remote_target_queue_names": remote_target_queue_names,
+                "consumer_local_queues": consumer_local_queues,
+                "alias_target_queues": alias_target_queues,
+                "referenced_target_queues": referenced_target_queues,
+                "validated_target_queues": validated_target_queues,
 
+                "source_queue_types": source_queue_types,
+                "target_queue_types": target_queue_types,
+
+                "xmit_queue_names": xmit_queue_names,
+                "usage_values": usage_values,
+
+                "queue_pairs": queue_pairs,
+                "routing_pattern": routing_pattern,
+            },
+
+            # ----------------------------------------------------
+            # Analysis / target reasoning
+            # ----------------------------------------------------
+            "analysis": {
+                "different_apps": different_apps,
+                "same_neighborhood": same_neighborhood,
+                "different_neighborhoods": different_neighborhoods,
+
+                "target_requires_separation": target_requires_separation,
+                "target_requires_remote_pattern": target_requires_remote_pattern,
+                "target_remote_reason": target_remote_reason,
+
+                "transformation_strategy": transformation_strategy,
+                "architecture_interpretation": architecture_interpretation,
+
+                "resolution_status": resolution_status,
+                "ambiguity_type": ambiguity_type,
+                "match_confidence": match_confidence,
+
+                "exact_qm_match": exact_qm_match,
+                "exact_queue_match": exact_queue_match,
+
+                "candidate_consumer_qms": candidate_consumer_qms,
+                "candidate_consumer_queues": candidate_consumer_queues,
+            },
+
+            # ----------------------------------------------------
+            # Health / connectivity validation
+            # ----------------------------------------------------
             "health": {
                 "is_as_is_broken": is_as_is_broken,
                 "path_continuity": path_continuity,
                 "is_orphaned_producer": is_orphaned_producer,
             },
 
-            "issues": issues,
+            # ----------------------------------------------------
+            # Evidence / traceability
+            # ----------------------------------------------------
+            "evidence": {
+                "queues_involved": safe_unique(group, "Discrete Queue Name"),
+                "record_ids": sorted(group["record_id"].tolist()),
+                "record_count": int(len(group)),
+                "issues": sorted(set(issues)),
+                "descriptive_summary": descriptive_summary,
+            },
+
+            # ----------------------------------------------------
+            # Backward-compatible flat aliases
+            # Helps if older code expects flat fields
+            # ----------------------------------------------------
+            "producer_name": producer_name,
+            "consumer_name": consumer_name,
+            "producer_app": producer_app,
+            "consumer_app": consumer_app,
+            "producer_apps": producer_apps,
+            "consumer_apps": consumer_apps,
+            "producer_home_qm": producer_home_qm,
+            "consumer_home_qm": consumer_home_qm,
+            "routing_target_qm": routing_target_qm,
+            "producer_neighborhoods": producer_neighborhoods,
+            "consumer_neighborhoods": consumer_neighborhoods,
+            "same_home_qm": same_home_qm,
+            "different_apps": different_apps,
+            "same_neighborhood": same_neighborhood,
+            "different_neighborhoods": different_neighborhoods,
+            "target_requires_separation": target_requires_separation,
+            "target_requires_remote_pattern": target_requires_remote_pattern,
+            "target_remote_reason": target_remote_reason,
+            "transformation_strategy": transformation_strategy,
+            "architecture_interpretation": architecture_interpretation,
+            "resolution_status": resolution_status,
+            "ambiguity_type": ambiguity_type,
+            "match_confidence": match_confidence,
+            "exact_qm_match": exact_qm_match,
+            "exact_queue_match": exact_queue_match,
+            "candidate_consumer_qms": candidate_consumer_qms,
+            "candidate_consumer_queues": candidate_consumer_queues,
+            "qm_path": qm_path,
+            "queue_pairs": queue_pairs,
+            "routing_pattern": routing_pattern,
+            "has_remote": has_remote,
+            "has_alias": has_alias,
+            "has_local_only": has_local_only,
+            "source_queues": source_queues,
+            "target_queues": target_queues,
+            "producer_local_queues": producer_local_queues,
+            "producer_remote_queue_objects": producer_remote_queue_objects,
+            "remote_target_queue_names": remote_target_queue_names,
+            "consumer_local_queues": consumer_local_queues,
+            "alias_target_queues": alias_target_queues,
+            "referenced_target_queues": referenced_target_queues,
+            "validated_target_queues": validated_target_queues,
+            "source_queue_types": source_queue_types,
+            "target_queue_types": target_queue_types,
+            "xmit_queue_names": xmit_queue_names,
+            "usage_values": usage_values,
+            "record_ids": sorted(group["record_id"].tolist()),
+            "record_count": int(len(group)),
+            "issues": sorted(set(issues)),
+            "descriptive_summary": descriptive_summary,
+
+            # Flat health aliases
+            "is_as_is_broken": is_as_is_broken,
+            "path_continuity": path_continuity,
+            "is_orphaned_producer": is_orphaned_producer,
         }
 
     return flows
