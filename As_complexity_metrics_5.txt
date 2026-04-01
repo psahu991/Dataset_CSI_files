@@ -1,0 +1,331 @@
+from typing import Dict, Any, List, Tuple
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def as_list(value) -> List[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if value is None:
+        return []
+    if str(value).strip():
+        return [str(value).strip()]
+    return []
+
+
+def flatten_qm_path(qm_path: List[Any]) -> List[str]:
+    """
+    Normalize qm_path into a flat ordered list of QM names.
+    Handles cases like:
+      ["WL1", "WQ26", "WL2"]
+      ["WL1|WL9", "WQ26", "WL2"]
+    """
+    flat = []
+    for item in qm_path or []:
+        item = str(item).strip()
+        if not item:
+            continue
+        if "|" in item:
+            parts = [p.strip() for p in item.split("|") if p.strip()]
+            flat.extend(parts)
+        else:
+            flat.append(item)
+    return flat
+
+
+# ============================================================
+# 1. Build QM graph data
+# ============================================================
+
+def build_qm_graph_data(flows: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[Tuple[str, str], Any], Dict[Tuple[str, str], Any]]:
+    """
+    Build graph structures from refined flows.
+
+    Returns:
+        nodes: {
+            qm: {
+                "hosted_apps": set(...),
+                "flows": set(...),
+                "in_degree": int,
+                "out_degree": int,
+                "routing_only": bool,
+            }
+        }
+
+        physical_edges: {
+            (src_qm, tgt_qm): {
+                "flows": set(...),
+                "count": int,
+            }
+        }
+
+        logical_edges: {
+            (src_qm, tgt_qm): {
+                "producer_apps": set(...),
+                "consumer_apps": set(...),
+                "flow_ids": set(...),
+            }
+        }
+    """
+    nodes: Dict[str, Any] = {}
+    physical_edges: Dict[Tuple[str, str], Any] = {}
+    logical_edges: Dict[Tuple[str, str], Any] = {}
+
+    for flow_id, flow in flows.items():
+        producer_app = flow.get("producer_app", "")
+        consumer_app = flow.get("consumer_app", "")
+
+        producer_qms = as_list(flow.get("producer_home_qm"))
+        consumer_qms = as_list(flow.get("consumer_home_qm"))
+        qm_path = flatten_qm_path(flow.get("qm_path", []))
+
+        # Register all seen QMs
+        all_seen_qms = set(producer_qms) | set(consumer_qms) | set(qm_path)
+        for qm in all_seen_qms:
+            if qm not in nodes:
+                nodes[qm] = {
+                    "hosted_apps": set(),
+                    "flows": set(),
+                    "in_degree": 0,
+                    "out_degree": 0,
+                    "routing_only": False,
+                }
+            nodes[qm]["flows"].add(flow_id)
+
+        # Attach app ownership evidence
+        for qm in producer_qms:
+            nodes[qm]["hosted_apps"].add(producer_app)
+
+        for qm in consumer_qms:
+            nodes[qm]["hosted_apps"].add(consumer_app)
+
+        # Build directed edges from qm_path
+        for i in range(len(qm_path) - 1):
+            src = qm_path[i]
+            tgt = qm_path[i + 1]
+
+            if not src or not tgt or src == tgt:
+                continue
+
+            edge_key = (src, tgt)
+
+            if edge_key not in physical_edges:
+                physical_edges[edge_key] = {
+                    "flows": set(),
+                    "count": 0,
+                }
+
+            physical_edges[edge_key]["flows"].add(flow_id)
+            physical_edges[edge_key]["count"] += 1
+
+            if edge_key not in logical_edges:
+                logical_edges[edge_key] = {
+                    "producer_apps": set(),
+                    "consumer_apps": set(),
+                    "flow_ids": set(),
+                }
+
+            logical_edges[edge_key]["producer_apps"].add(producer_app)
+            logical_edges[edge_key]["consumer_apps"].add(consumer_app)
+            logical_edges[edge_key]["flow_ids"].add(flow_id)
+
+            nodes[src]["out_degree"] += 1
+            nodes[tgt]["in_degree"] += 1
+
+    # Final routing_only classification
+    for qm, data in nodes.items():
+        data["routing_only"] = len(data["hosted_apps"]) == 0
+
+    return nodes, physical_edges, logical_edges
+
+
+# ============================================================
+# 2. Build flow + node metrics
+# ============================================================
+
+def build_complexity_matrix(flows: Dict[str, Dict[str, Any]],
+                            nodes: Dict[str, Any],
+                            physical_edges: Dict[Tuple[str, str], Any],
+                            logical_edges: Dict[Tuple[str, str], Any]) -> Dict[str, Any]:
+    """
+    Build flow_metrics and node_metrics used by the optimizer.
+    """
+    flow_metrics: Dict[str, Any] = {}
+    node_metrics: Dict[str, Any] = {}
+
+    # -------------------------
+    # Flow metrics
+    # -------------------------
+    for flow_id, flow in flows.items():
+        qm_path = flatten_qm_path(flow.get("qm_path", []))
+        hop_count = max(len(qm_path) - 1, 0)
+
+        health = flow.get("health", {}) or {}
+
+        flow_metrics[flow_id] = {
+            "hop_count": hop_count,
+            "path_length": len(qm_path),
+            "has_remote": bool(flow.get("has_remote", False)),
+            "has_alias": bool(flow.get("has_alias", False)),
+            "has_local_only": bool(flow.get("has_local_only", False)),
+            "resolution_status": flow.get("resolution_status"),
+            "ambiguity_type": flow.get("ambiguity_type"),
+            "is_broken": bool(health.get("is_as_is_broken", False)),
+            "is_orphan": bool(health.get("is_orphaned_producer", False)),
+            "path_continuity": health.get("path_continuity"),
+            "issues": as_list(flow.get("issues", [])),
+            "incomplete": bool(health.get("is_as_is_broken", False)),
+        }
+
+    # -------------------------
+    # Node metrics
+    # -------------------------
+    for qm, data in nodes.items():
+        fan_in = int(data.get("in_degree", 0))
+        fan_out = int(data.get("out_degree", 0))
+        hosted_apps = data.get("hosted_apps", set())
+
+        node_metrics[qm] = {
+            "fan_in": fan_in,
+            "fan_out": fan_out,
+            "degree": fan_in + fan_out,
+            "app_count": len(hosted_apps),
+            "hosted_apps": sorted(hosted_apps),
+            "routing_only": bool(data.get("routing_only", False)),
+            "is_hotspot": fan_in > 5 or fan_out > 5,
+        }
+
+    return {
+        "flows": flow_metrics,
+        "nodes": node_metrics,
+    }
+
+
+# ============================================================
+# 3. Build routing analysis
+# ============================================================
+
+def build_routing_analysis(flows: Dict[str, Dict[str, Any]],
+                           nodes: Dict[str, Any],
+                           physical_edges: Dict[Tuple[str, str], Any]) -> Dict[str, Any]:
+    """
+    Derived routing analysis for the optimizer.
+
+    Produces per-flow routing facts like:
+    - direct vs indirect
+    - intermediate QMs
+    - routing issues
+    """
+    routing_analysis: Dict[str, Any] = {}
+
+    for flow_id, flow in flows.items():
+        qm_path = flatten_qm_path(flow.get("qm_path", []))
+        producer_qms = set(as_list(flow.get("producer_home_qm")))
+        consumer_qms = set(as_list(flow.get("consumer_home_qm")))
+        routing_target_qms = set(as_list(flow.get("routing_target_qm")))
+
+        analysis_issues = []
+
+        path_length = len(qm_path)
+        uses_intermediate_qm = path_length > 2
+        is_direct = path_length <= 2
+
+        intermediate_qms = qm_path[1:-1] if path_length > 2 else []
+
+        # Check if consumer appears in path
+        consumer_seen_in_path = any(qm in consumer_qms for qm in qm_path)
+
+        # Broken / incomplete routing
+        if bool(flow.get("health", {}).get("is_as_is_broken", False)):
+            analysis_issues.append("incomplete_routing_path")
+
+        # Routing target not aligned with consumer
+        if routing_target_qms and consumer_qms and not (routing_target_qms & consumer_qms):
+            if not consumer_seen_in_path:
+                analysis_issues.append("routing_not_aligned_with_consumer")
+
+        # Multiple routing targets
+        if isinstance(flow.get("routing_target_qm"), list):
+            analysis_issues.append("multiple_routing_target_qms")
+
+        routing_analysis[flow_id] = {
+            "path": qm_path,
+            "path_length": path_length,
+            "hop_count": max(path_length - 1, 0),
+            "is_direct": is_direct,
+            "uses_intermediate_qm": uses_intermediate_qm,
+            "intermediate_qms": intermediate_qms,
+            "consumer_seen_in_path": consumer_seen_in_path,
+            "analysis_issues": analysis_issues,
+        }
+
+    return routing_analysis
+
+
+# ============================================================
+# 4. One wrapper to generate all optimizer inputs
+# ============================================================
+
+def prepare_optimizer_inputs(flows: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Generate everything needed by build_optimization_decisions(...)
+
+    Returns:
+        {
+            "nodes": ...,
+            "physical_edges": ...,
+            "logical_edges": ...,
+            "flow_metrics": ...,
+            "node_metrics": ...,
+            "routing_analysis": ...,
+        }
+    """
+    nodes, physical_edges, logical_edges = build_qm_graph_data(flows)
+
+    matrix = build_complexity_matrix(
+        flows=flows,
+        nodes=nodes,
+        physical_edges=physical_edges,
+        logical_edges=logical_edges,
+    )
+
+    flow_metrics = matrix["flows"]
+    node_metrics = matrix["nodes"]
+
+    routing_analysis = build_routing_analysis(
+        flows=flows,
+        nodes=nodes,
+        physical_edges=physical_edges,
+    )
+
+    return {
+        "nodes": nodes,
+        "physical_edges": physical_edges,
+        "logical_edges": logical_edges,
+        "flow_metrics": flow_metrics,
+        "node_metrics": node_metrics,
+        "routing_analysis": routing_analysis,
+    }
+# Step 1: refined extractor
+flows = extract_flows_refined_submission_grade(df)
+
+# Step 2: derive all optimizer inputs in one shot
+optimizer_inputs = prepare_optimizer_inputs(flows)
+
+nodes = optimizer_inputs["nodes"]
+physical_edges = optimizer_inputs["physical_edges"]
+logical_edges = optimizer_inputs["logical_edges"]
+flow_metrics = optimizer_inputs["flow_metrics"]
+node_metrics = optimizer_inputs["node_metrics"]
+routing_analysis = optimizer_inputs["routing_analysis"]
+
+# Step 3: optimizer
+optimization_decisions = build_optimization_decisions(
+    flows=flows,
+    flow_metrics=flow_metrics,
+    node_metrics=node_metrics,
+    routing_analysis=routing_analysis,
+    nodes=nodes,
+)
