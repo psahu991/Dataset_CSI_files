@@ -1,0 +1,623 @@
+from typing import Dict, Any, List
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def as_list(value):
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if value is None:
+        return []
+    if str(value).strip():
+        return [str(value).strip()]
+    return []
+
+
+def safe_div(numerator, denominator):
+    return numerator / denominator if denominator else 0
+
+
+def pct_reduction(as_is_value, target_value):
+    if as_is_value == 0:
+        return 0.0
+    return round(((as_is_value - target_value) / as_is_value) * 100, 2)
+
+
+def score_reduction(as_is_score, target_score):
+    if as_is_score == 0:
+        return 0.0
+    return round(((as_is_score - target_score) / as_is_score) * 100, 2)
+
+
+# ============================================================
+# AS-IS complexity
+# ============================================================
+
+def build_as_is_complexity_matrix(flows: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Strict AS-IS complexity matrix from refined flows.
+
+    Measures:
+    - ownership complexity
+    - routing complexity
+    - object complexity
+    - anomaly/risk complexity
+    - weighted overall score
+    """
+
+    all_qms = set()
+    all_edges = set()
+    all_apps = set()
+    routing_target_qms = set()
+
+    total_flows = len(flows)
+
+    same_qm_cross_app_flows = 0
+    ambiguous_flows = 0
+    orphan_flows = 0
+    unresolved_flows = 0
+    broken_flows = 0
+
+    alias_flows = 0
+    remote_flows = 0
+    local_only_flows = 0
+
+    multiple_producer_home_qm_flows = 0
+    multiple_consumer_home_qm_flows = 0
+    multiple_routing_target_qm_flows = 0
+
+    validated_remote_flows = 0
+    unvalidated_remote_flows = 0
+
+    total_hops = 0
+    max_hops = 0
+
+    total_source_queues = 0
+    total_target_queues = 0
+    total_queue_pairs = 0
+    total_remote_queue_objects = 0
+    total_validated_target_queues = 0
+    total_alias_target_queues = 0
+    total_xmit_queue_refs = 0
+
+    app_to_qms = {}
+
+    for flow_id, flow in flows.items():
+        producer_app = flow.get("producer_app", "")
+        consumer_app = flow.get("consumer_app", "")
+        producer_home_qm = flow.get("producer_home_qm")
+        consumer_home_qm = flow.get("consumer_home_qm")
+        routing_target_qm = flow.get("routing_target_qm")
+
+        qm_path = as_list(flow.get("qm_path", []))
+        source_queues = as_list(flow.get("source_queues", []))
+        target_queues = as_list(flow.get("target_queues", []))
+        queue_pairs = flow.get("queue_pairs", []) or []
+
+        producer_remote_queue_objects = as_list(flow.get("producer_remote_queue_objects", []))
+        validated_target_queues = as_list(flow.get("validated_target_queues", []))
+        alias_target_queues = as_list(flow.get("alias_target_queues", []))
+        xmit_queue_names = as_list(flow.get("xmit_queue_names", []))
+
+        has_remote = bool(flow.get("has_remote", False))
+        has_alias = bool(flow.get("has_alias", False))
+        has_local_only = bool(flow.get("has_local_only", False))
+
+        same_home_qm = bool(flow.get("same_home_qm", False))
+        different_apps = bool(flow.get("different_apps", False))
+
+        resolution_status = flow.get("resolution_status")
+        issues = set(as_list(flow.get("issues", [])))
+
+        # ----------------------------------------------------
+        # Apps and ownership
+        # ----------------------------------------------------
+        if producer_app:
+            all_apps.add(producer_app)
+            app_to_qms.setdefault(producer_app, set()).update(as_list(producer_home_qm))
+
+        if consumer_app:
+            all_apps.add(consumer_app)
+            app_to_qms.setdefault(consumer_app, set()).update(as_list(consumer_home_qm))
+
+        # ----------------------------------------------------
+        # QMs and edges
+        # ----------------------------------------------------
+        for qm in qm_path:
+            if qm:
+                all_qms.add(qm)
+
+        for qm in as_list(producer_home_qm):
+            all_qms.add(qm)
+        for qm in as_list(consumer_home_qm):
+            all_qms.add(qm)
+        for qm in as_list(routing_target_qm):
+            all_qms.add(qm)
+            routing_target_qms.add(qm)
+
+        for i in range(len(qm_path) - 1):
+            src = qm_path[i]
+            tgt = qm_path[i + 1]
+            if src and tgt and src != tgt:
+                all_edges.add((src, tgt))
+
+        # ----------------------------------------------------
+        # Routing complexity
+        # ----------------------------------------------------
+        hop_count = max(len(qm_path) - 1, 0)
+        total_hops += hop_count
+        max_hops = max(max_hops, hop_count)
+
+        if has_remote:
+            remote_flows += 1
+        if has_alias:
+            alias_flows += 1
+        if has_local_only:
+            local_only_flows += 1
+
+        if resolution_status == "INDIRECT_COMPLETE":
+            validated_remote_flows += 1
+        if resolution_status in {"QM_ONLY_MATCH", "QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}:
+            ambiguous_flows += 1
+        if resolution_status == "ORPHAN":
+            orphan_flows += 1
+        if resolution_status == "UNRESOLVED":
+            unresolved_flows += 1
+
+        if "multiple_producer_home_qms" in issues:
+            multiple_producer_home_qm_flows += 1
+        if "multiple_consumer_home_qms" in issues:
+            multiple_consumer_home_qm_flows += 1
+        if "multiple_routing_target_qms" in issues:
+            multiple_routing_target_qm_flows += 1
+
+        if "same_qm_cross_app_flow_in_asis" in issues:
+            same_qm_cross_app_flows += 1
+
+        if "ambiguous_flow" in issues and resolution_status != "INDIRECT_COMPLETE":
+            unvalidated_remote_flows += 1
+
+        if "orphan_flow" in issues or "missing_home_qm" in issues:
+            broken_flows += 1
+
+        # ----------------------------------------------------
+        # Object complexity
+        # ----------------------------------------------------
+        total_source_queues += len(source_queues)
+        total_target_queues += len(target_queues)
+        total_queue_pairs += len(queue_pairs)
+        total_remote_queue_objects += len(producer_remote_queue_objects)
+        total_validated_target_queues += len(validated_target_queues)
+        total_alias_target_queues += len(alias_target_queues)
+        total_xmit_queue_refs += len(xmit_queue_names)
+
+    # --------------------------------------------------------
+    # Ownership conflict metrics
+    # --------------------------------------------------------
+    apps_with_multiple_qms = 0
+    total_app_qm_assignments = 0
+
+    for app, qms in app_to_qms.items():
+        total_app_qm_assignments += len(qms)
+        if len(qms) > 1:
+            apps_with_multiple_qms += 1
+
+    # --------------------------------------------------------
+    # Dimension scores
+    # --------------------------------------------------------
+    ownership_score = (
+        apps_with_multiple_qms * 5
+        + multiple_producer_home_qm_flows * 3
+        + multiple_consumer_home_qm_flows * 3
+        + same_qm_cross_app_flows * 4
+    )
+
+    routing_score = (
+        len(all_edges) * 2
+        + total_hops * 1.5
+        + max_hops * 2
+        + multiple_routing_target_qm_flows * 3
+        + alias_flows * 2
+        + remote_flows * 1
+    )
+
+    object_score = (
+        total_remote_queue_objects * 1
+        + total_queue_pairs * 1
+        + total_alias_target_queues * 1.5
+        + total_xmit_queue_refs * 1
+    )
+
+    risk_score = (
+        ambiguous_flows * 4
+        + orphan_flows * 5
+        + unresolved_flows * 5
+        + broken_flows * 4
+        + unvalidated_remote_flows * 3
+    )
+
+    overall_score = round(
+        ownership_score + routing_score + object_score + risk_score,
+        2
+    )
+
+    return {
+        "scope": "AS_IS",
+
+        "counts": {
+            "total_flows": total_flows,
+            "total_apps": len(all_apps),
+            "total_qms": len(all_qms),
+            "total_qm_edges": len(all_edges),
+            "routing_target_qm_count": len(routing_target_qms),
+            "total_app_qm_assignments": total_app_qm_assignments,
+        },
+
+        "routing": {
+            "remote_flows": remote_flows,
+            "local_only_flows": local_only_flows,
+            "alias_flows": alias_flows,
+            "validated_remote_flows": validated_remote_flows,
+            "unvalidated_remote_flows": unvalidated_remote_flows,
+            "avg_hops": round(safe_div(total_hops, total_flows), 2),
+            "max_hops": max_hops,
+            "total_hops": total_hops,
+        },
+
+        "ownership": {
+            "apps_with_multiple_qms": apps_with_multiple_qms,
+            "multiple_producer_home_qm_flows": multiple_producer_home_qm_flows,
+            "multiple_consumer_home_qm_flows": multiple_consumer_home_qm_flows,
+            "same_qm_cross_app_flows": same_qm_cross_app_flows,
+        },
+
+        "objects": {
+            "total_source_queues": total_source_queues,
+            "total_target_queues": total_target_queues,
+            "total_queue_pairs": total_queue_pairs,
+            "total_remote_queue_objects": total_remote_queue_objects,
+            "total_validated_target_queues": total_validated_target_queues,
+            "total_alias_target_queues": total_alias_target_queues,
+            "total_xmit_queue_refs": total_xmit_queue_refs,
+        },
+
+        "risk": {
+            "ambiguous_flows": ambiguous_flows,
+            "orphan_flows": orphan_flows,
+            "unresolved_flows": unresolved_flows,
+            "broken_flows": broken_flows,
+            "multiple_routing_target_qm_flows": multiple_routing_target_qm_flows,
+        },
+
+        "scores": {
+            "ownership_score": round(ownership_score, 2),
+            "routing_score": round(routing_score, 2),
+            "object_score": round(object_score, 2),
+            "risk_score": round(risk_score, 2),
+            "overall_score": overall_score,
+        },
+    }
+
+
+# ============================================================
+# TARGET complexity
+# ============================================================
+
+def build_target_complexity_matrix(validated_target_flows: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Strict TARGET complexity matrix from validated target flows.
+
+    TARGET should show:
+    - one QM per app
+    - deterministic direct cross-QM routing
+    - no ambiguity
+    - no orphan/broken flows
+    """
+
+    all_qms = set()
+    all_edges = set()
+    all_apps = set()
+
+    total_flows = len(validated_target_flows)
+
+    local_flows = 0
+    cross_qm_flows = 0
+
+    total_hops = 0
+    max_hops = 0
+
+    total_producer_local_queues = 0
+    total_consumer_local_queues = 0
+    total_remote_queues = 0
+    total_xmit_queues = 0
+    total_sender_channels = 0
+    total_receiver_channels = 0
+
+    apps_with_multiple_qms = 0
+    app_to_qms = {}
+
+    invalid_cross_app_same_qm = 0
+    manual_review_flows_remaining = 0
+
+    for flow_id, tf in validated_target_flows.items():
+        producer_app = tf.get("producer_app", "")
+        consumer_app = tf.get("consumer_app", "")
+
+        producer_qm = tf.get("target_producer_qm", "")
+        consumer_qm = tf.get("target_consumer_qm", "")
+
+        producer_local_queue = tf.get("producer_local_queue")
+        consumer_local_queue = tf.get("consumer_local_queue")
+        remote_queue = tf.get("remote_queue")
+        xmit_queue = tf.get("xmit_queue")
+        sender_channel = tf.get("sender_channel")
+        receiver_channel = tf.get("receiver_channel")
+
+        requires_cross_qm = bool(tf.get("requires_cross_qm", False))
+        manual_review = bool(tf.get("manual_review", False))
+
+        if producer_app:
+            all_apps.add(producer_app)
+            app_to_qms.setdefault(producer_app, set()).add(producer_qm)
+
+        if consumer_app:
+            all_apps.add(consumer_app)
+            app_to_qms.setdefault(consumer_app, set()).add(consumer_qm)
+
+        if producer_qm:
+            all_qms.add(producer_qm)
+        if consumer_qm:
+            all_qms.add(consumer_qm)
+
+        if producer_local_queue:
+            total_producer_local_queues += 1
+        if consumer_local_queue:
+            total_consumer_local_queues += 1
+
+        if remote_queue:
+            total_remote_queues += 1
+        if xmit_queue:
+            total_xmit_queues += 1
+        if sender_channel:
+            total_sender_channels += 1
+        if receiver_channel:
+            total_receiver_channels += 1
+
+        if requires_cross_qm and producer_qm and consumer_qm and producer_qm != consumer_qm:
+            cross_qm_flows += 1
+            all_edges.add((producer_qm, consumer_qm))
+            hop_count = 1
+        else:
+            local_flows += 1
+            hop_count = 0
+
+        total_hops += hop_count
+        max_hops = max(max_hops, hop_count)
+
+        if producer_app and consumer_app and producer_app != consumer_app and producer_qm == consumer_qm and producer_qm:
+            invalid_cross_app_same_qm += 1
+
+        if manual_review:
+            manual_review_flows_remaining += 1
+
+    for app, qms in app_to_qms.items():
+        qms = {q for q in qms if q}
+        if len(qms) > 1:
+            apps_with_multiple_qms += 1
+
+    ownership_score = (
+        apps_with_multiple_qms * 5
+        + invalid_cross_app_same_qm * 4
+    )
+
+    routing_score = (
+        len(all_edges) * 2
+        + total_hops * 1
+        + max_hops * 1
+    )
+
+    object_score = (
+        total_remote_queues * 1
+        + total_xmit_queues * 1
+        + total_sender_channels * 1
+        + total_receiver_channels * 1
+    )
+
+    risk_score = (
+        invalid_cross_app_same_qm * 5
+        + manual_review_flows_remaining * 2
+    )
+
+    overall_score = round(
+        ownership_score + routing_score + object_score + risk_score,
+        2
+    )
+
+    return {
+        "scope": "TARGET",
+
+        "counts": {
+            "total_flows": total_flows,
+            "total_apps": len(all_apps),
+            "total_qms": len(all_qms),
+            "total_qm_edges": len(all_edges),
+        },
+
+        "routing": {
+            "cross_qm_flows": cross_qm_flows,
+            "local_flows": local_flows,
+            "avg_hops": round(safe_div(total_hops, total_flows), 2),
+            "max_hops": max_hops,
+            "total_hops": total_hops,
+        },
+
+        "ownership": {
+            "apps_with_multiple_qms": apps_with_multiple_qms,
+            "invalid_cross_app_same_qm": invalid_cross_app_same_qm,
+        },
+
+        "objects": {
+            "total_producer_local_queues": total_producer_local_queues,
+            "total_consumer_local_queues": total_consumer_local_queues,
+            "total_remote_queues": total_remote_queues,
+            "total_xmit_queues": total_xmit_queues,
+            "total_sender_channels": total_sender_channels,
+            "total_receiver_channels": total_receiver_channels,
+        },
+
+        "risk": {
+            "manual_review_flows_remaining": manual_review_flows_remaining,
+        },
+
+        "scores": {
+            "ownership_score": round(ownership_score, 2),
+            "routing_score": round(routing_score, 2),
+            "object_score": round(object_score, 2),
+            "risk_score": round(risk_score, 2),
+            "overall_score": overall_score,
+        },
+    }
+
+
+# ============================================================
+# Comparison
+# ============================================================
+
+def compare_as_is_vs_target_complexity(as_is_matrix: Dict[str, Any],
+                                       target_matrix: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Compare AS-IS and TARGET complexity very strictly.
+    Produces:
+    - metric-by-metric comparison
+    - score reductions
+    - summary verdict
+    """
+
+    comparison = {
+        "counts": {},
+        "routing": {},
+        "ownership": {},
+        "objects": {},
+        "risk": {},
+        "scores": {},
+        "summary": {},
+    }
+
+    # --------------------------------------------------------
+    # Compare same-shape sections where metrics overlap
+    # --------------------------------------------------------
+    comparable_sections = ["counts", "routing", "ownership", "risk"]
+
+    for section in comparable_sections:
+        as_is_section = as_is_matrix.get(section, {})
+        target_section = target_matrix.get(section, {})
+
+        shared_keys = sorted(set(as_is_section.keys()) & set(target_section.keys()))
+        for key in shared_keys:
+            as_is_val = as_is_section.get(key, 0)
+            target_val = target_section.get(key, 0)
+
+            if isinstance(as_is_val, (int, float)) and isinstance(target_val, (int, float)):
+                comparison[section][key] = {
+                    "as_is": as_is_val,
+                    "target": target_val,
+                    "reduction": round(as_is_val - target_val, 2),
+                    "reduction_pct": pct_reduction(as_is_val, target_val),
+                }
+
+    # --------------------------------------------------------
+    # Object comparison with semantic alignment
+    # TARGET and AS-IS object names differ, so compare selected mapped metrics
+    # --------------------------------------------------------
+    as_is_objects = as_is_matrix.get("objects", {})
+    target_objects = target_matrix.get("objects", {})
+
+    object_mapping = {
+        "routing_artifacts": (
+            as_is_objects.get("total_remote_queue_objects", 0)
+            + as_is_objects.get("total_alias_target_queues", 0)
+            + as_is_objects.get("total_xmit_queue_refs", 0),
+            target_objects.get("total_remote_queues", 0)
+            + target_objects.get("total_xmit_queues", 0)
+            + target_objects.get("total_sender_channels", 0)
+            + target_objects.get("total_receiver_channels", 0),
+        ),
+        "business_local_queues": (
+            as_is_objects.get("total_validated_target_queues", 0),
+            target_objects.get("total_consumer_local_queues", 0),
+        ),
+    }
+
+    for metric_name, (as_is_val, target_val) in object_mapping.items():
+        comparison["objects"][metric_name] = {
+            "as_is": as_is_val,
+            "target": target_val,
+            "reduction": round(as_is_val - target_val, 2),
+            "reduction_pct": pct_reduction(as_is_val, target_val),
+        }
+
+    # --------------------------------------------------------
+    # Score comparison
+    # --------------------------------------------------------
+    as_is_scores = as_is_matrix.get("scores", {})
+    target_scores = target_matrix.get("scores", {})
+
+    shared_score_keys = sorted(set(as_is_scores.keys()) & set(target_scores.keys()))
+    for key in shared_score_keys:
+        as_is_val = as_is_scores.get(key, 0)
+        target_val = target_scores.get(key, 0)
+
+        comparison["scores"][key] = {
+            "as_is": as_is_val,
+            "target": target_val,
+            "reduction": round(as_is_val - target_val, 2),
+            "reduction_pct": score_reduction(as_is_val, target_val),
+        }
+
+    # --------------------------------------------------------
+    # Final summary
+    # --------------------------------------------------------
+    as_is_overall = as_is_scores.get("overall_score", 0)
+    target_overall = target_scores.get("overall_score", 0)
+
+    overall_reduction = round(as_is_overall - target_overall, 2)
+    overall_reduction_pct = score_reduction(as_is_overall, target_overall)
+
+    summary_points = []
+
+    if overall_reduction > 0:
+        summary_points.append("target_topology_is_less_complex_than_as_is")
+    else:
+        summary_points.append("target_topology_did_not_reduce_overall_complexity")
+
+    if target_matrix.get("ownership", {}).get("apps_with_multiple_qms", 0) == 0:
+        summary_points.append("target_achieves_one_qm_per_app")
+
+    if target_matrix.get("risk", {}).get("manual_review_flows_remaining", 0) == 0:
+        summary_points.append("target_has_no_remaining_manual_review_flows")
+
+    if target_matrix.get("routing", {}).get("max_hops", 0) <= 1:
+        summary_points.append("target_uses_deterministic_low_hop_routing")
+
+    comparison["summary"] = {
+        "as_is_overall_score": as_is_overall,
+        "target_overall_score": target_overall,
+        "overall_reduction": overall_reduction,
+        "overall_reduction_pct": overall_reduction_pct,
+        "verdict_points": summary_points,
+    }
+
+    return comparison
+# 1. AS-IS complexity
+as_is_complexity = build_as_is_complexity_matrix(flows)
+
+# 2. TARGET complexity
+target_complexity = build_target_complexity_matrix(validated_target_flows)
+
+# 3. Comparison
+complexity_comparison = compare_as_is_vs_target_complexity(
+    as_is_complexity,
+    target_complexity
+)
