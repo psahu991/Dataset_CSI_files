@@ -1,0 +1,633 @@
+import pandas as pd
+from typing import Dict, Any, List
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def as_list(value):
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if value is None:
+        return []
+    if str(value).strip():
+        return [str(value).strip()]
+    return []
+
+
+def join_or_none(values, sep=" | "):
+    vals = [str(v).strip() for v in as_list(values) if str(v).strip()]
+    return sep.join(vals) if vals else ""
+
+
+def safe_get(dct, *keys, default=""):
+    cur = dct
+    for k in keys:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(k, default)
+    return cur
+
+
+# ============================================================
+# 1. Human-readable explanation report
+# ============================================================
+
+def build_flow_explanation_record(flow_id: str,
+                                  flow: Dict[str, Any],
+                                  final_decision: Dict[str, Any],
+                                  target_flow: Dict[str, Any] = None,
+                                  validation_result: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Build one human-readable explanation record for a single flow.
+    """
+
+    producer_app = flow.get("producer_app", "")
+    consumer_app = flow.get("consumer_app", "")
+    producer_name = flow.get("producer_name", "")
+    consumer_name = flow.get("consumer_name", "")
+
+    producer_home_qm = join_or_none(flow.get("producer_home_qm"))
+    consumer_home_qm = join_or_none(flow.get("consumer_home_qm"))
+    routing_target_qm = join_or_none(flow.get("routing_target_qm"))
+
+    architecture_interpretation = flow.get("architecture_interpretation", "")
+    transformation_strategy = flow.get("transformation_strategy", "")
+    resolution_status = flow.get("resolution_status", "")
+    ambiguity_type = flow.get("ambiguity_type", "")
+    routing_pattern = flow.get("routing_pattern", "")
+    issues = as_list(flow.get("issues", []))
+    descriptive_summary = flow.get("descriptive_summary", "")
+
+    strategy = final_decision.get("strategy", "")
+    decision_family = final_decision.get("decision_family", "")
+    target_route_type = final_decision.get("target_route_type", "")
+    target_validity = final_decision.get("target_validity", "")
+    final_status = final_decision.get("final_status", "")
+    confidence = final_decision.get("confidence", "")
+
+    reasons = as_list(final_decision.get("reasons", []))
+    warnings = as_list(final_decision.get("warnings", []))
+    decision_notes = as_list(final_decision.get("decision_notes", []))
+    target_design_actions = as_list(final_decision.get("target_design_actions", []))
+    expert_reasons = as_list(final_decision.get("expert_reasons", []))
+    override_fields = as_list(final_decision.get("override_fields", []))
+
+    target_producer_qm = final_decision.get("target_producer_qm", "")
+    target_consumer_qm = final_decision.get("target_consumer_qm", "")
+
+    validation_status = ""
+    validation_errors = []
+    validation_warnings = []
+
+    if validation_result:
+        validation_status = validation_result.get("status", "")
+        validation_errors = as_list(validation_result.get("errors", []))
+        validation_warnings = as_list(validation_result.get("warnings", []))
+
+    target_summary = ""
+    if target_flow:
+        if target_flow.get("requires_cross_qm", False):
+            target_summary = (
+                f"Target routes from producer QM {target_flow.get('target_producer_qm', '')} "
+                f"to consumer QM {target_flow.get('target_consumer_qm', '')} using remote queue "
+                f"{target_flow.get('remote_queue', '')}, XMIT queue {target_flow.get('xmit_queue', '')}, "
+                f"and sender/receiver channels."
+            )
+        else:
+            target_summary = (
+                f"Target remains local on QM {target_flow.get('target_producer_qm', '')} "
+                f"with consumer reading from local queue {target_flow.get('consumer_local_queue', '')}."
+            )
+
+    summary_sentence = (
+        f"Flow {flow_id} ({producer_app} -> {consumer_app}) was classified as "
+        f"{architecture_interpretation or 'UNKNOWN'} in the AS-IS topology and assigned target strategy "
+        f"{strategy or 'UNKNOWN'} with final status {final_status or 'UNKNOWN'}."
+    )
+
+    change_why = []
+    if reasons:
+        change_why.append("Reasons: " + "; ".join(reasons))
+    if expert_reasons:
+        change_why.append("Expert overrides: " + "; ".join(expert_reasons))
+    if decision_notes:
+        change_why.append("Decision notes: " + "; ".join(decision_notes))
+    if warnings:
+        change_why.append("Warnings: " + "; ".join(warnings))
+
+    return {
+        "flow_id": flow_id,
+
+        "producer_app": producer_app,
+        "consumer_app": consumer_app,
+        "producer_name": producer_name,
+        "consumer_name": consumer_name,
+
+        "as_is_producer_home_qm": producer_home_qm,
+        "as_is_consumer_home_qm": consumer_home_qm,
+        "as_is_routing_target_qm": routing_target_qm,
+        "as_is_resolution_status": resolution_status,
+        "as_is_ambiguity_type": ambiguity_type,
+        "as_is_routing_pattern": routing_pattern,
+        "as_is_architecture_interpretation": architecture_interpretation,
+        "as_is_issues": join_or_none(issues),
+        "as_is_summary": descriptive_summary,
+
+        "target_strategy": strategy,
+        "target_decision_family": decision_family,
+        "target_route_type": target_route_type,
+        "target_validity": target_validity,
+        "target_confidence": confidence,
+        "final_status": final_status,
+        "target_producer_qm": target_producer_qm,
+        "target_consumer_qm": target_consumer_qm,
+
+        "target_design_actions": join_or_none(target_design_actions),
+        "decision_reasons": join_or_none(reasons),
+        "decision_warnings": join_or_none(warnings),
+        "decision_notes": join_or_none(decision_notes),
+        "expert_reasons": join_or_none(expert_reasons),
+        "override_fields": join_or_none(override_fields),
+
+        "validation_status": validation_status,
+        "validation_errors": join_or_none(validation_errors),
+        "validation_warnings": join_or_none(validation_warnings),
+
+        "summary_sentence": summary_sentence,
+        "target_summary": target_summary,
+        "change_rationale": " || ".join(change_why),
+    }
+
+
+def build_explanation_report(flows: Dict[str, Dict[str, Any]],
+                             final_decisions: Dict[str, Dict[str, Any]],
+                             target_flows: Dict[str, Dict[str, Any]],
+                             validation_results: Dict[str, Dict[str, Any]],
+                             complexity_comparison: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build a full human-readable explanation report.
+
+    Returns:
+        {
+            "flow_report_df": dataframe-ready list,
+            "summary": dict,
+            "narrative": list[str]
+        }
+    """
+
+    flow_rows = []
+
+    for flow_id, flow in flows.items():
+        decision = final_decisions.get(flow_id, {})
+        target_flow = target_flows.get(flow_id)
+        validation_result = validation_results.get(flow_id, {})
+
+        row = build_flow_explanation_record(
+            flow_id=flow_id,
+            flow=flow,
+            final_decision=decision,
+            target_flow=target_flow,
+            validation_result=validation_result,
+        )
+        flow_rows.append(row)
+
+    flow_report_df = pd.DataFrame(flow_rows)
+
+    if not flow_report_df.empty:
+        sort_cols = [c for c in ["final_status", "validation_status", "flow_id"] if c in flow_report_df.columns]
+        flow_report_df = flow_report_df.sort_values(sort_cols).reset_index(drop=True)
+
+    summary = complexity_comparison.get("summary", {})
+    counts_cmp = complexity_comparison.get("counts", {})
+    routing_cmp = complexity_comparison.get("routing", {})
+    ownership_cmp = complexity_comparison.get("ownership", {})
+    risk_cmp = complexity_comparison.get("risk", {})
+    scores_cmp = complexity_comparison.get("scores", {})
+
+    narrative = []
+
+    if summary:
+        narrative.append(
+            f"Overall complexity score reduced from {summary.get('as_is_overall_score', 0)} "
+            f"to {summary.get('target_overall_score', 0)}, a reduction of "
+            f"{summary.get('overall_reduction_pct', 0)}%."
+        )
+
+    if "total_qms" in counts_cmp:
+        narrative.append(
+            f"Total QMs changed from {counts_cmp['total_qms']['as_is']} "
+            f"to {counts_cmp['total_qms']['target']}."
+        )
+
+    if "total_qm_edges" in counts_cmp:
+        narrative.append(
+            f"QM-to-QM edges changed from {counts_cmp['total_qm_edges']['as_is']} "
+            f"to {counts_cmp['total_qm_edges']['target']}."
+        )
+
+    if "avg_hops" in routing_cmp:
+        narrative.append(
+            f"Average routing hops changed from {routing_cmp['avg_hops']['as_is']} "
+            f"to {routing_cmp['avg_hops']['target']}."
+        )
+
+    if "apps_with_multiple_qms" in ownership_cmp:
+        narrative.append(
+            f"Applications tied to multiple QMs changed from "
+            f"{ownership_cmp['apps_with_multiple_qms']['as_is']} to "
+            f"{ownership_cmp['apps_with_multiple_qms']['target']}."
+        )
+
+    if "ownership_score" in scores_cmp:
+        narrative.append(
+            f"Ownership complexity score changed from "
+            f"{scores_cmp['ownership_score']['as_is']} to "
+            f"{scores_cmp['ownership_score']['target']}."
+        )
+
+    if "routing_score" in scores_cmp:
+        narrative.append(
+            f"Routing complexity score changed from "
+            f"{scores_cmp['routing_score']['as_is']} to "
+            f"{scores_cmp['routing_score']['target']}."
+        )
+
+    if "risk_score" in scores_cmp:
+        narrative.append(
+            f"Risk complexity score changed from "
+            f"{scores_cmp['risk_score']['as_is']} to "
+            f"{scores_cmp['risk_score']['target']}."
+        )
+
+    return {
+        "flow_report_df": flow_report_df,
+        "summary": summary,
+        "narrative": narrative,
+    }
+
+
+# ============================================================
+# 2. Target CSV export
+# ============================================================
+
+def build_target_csv_rows(target_flows: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
+    """
+    Build a target CSV-style row set from target flows.
+
+    This is a practical automation-ready export.
+    One flow may expand into multiple object rows:
+    - producer local queue
+    - producer remote queue
+    - xmit queue
+    - sender channel
+    - receiver channel
+    - consumer local queue
+
+    NOTE:
+    This is not yet identical to the original raw input schema.
+    It is a canonical target topology CSV.
+    If you want exact source-schema alignment later, we can add a schema-mapping layer.
+    """
+
+    rows = []
+
+    for flow_id, tf in target_flows.items():
+        producer_app = tf.get("producer_app", "")
+        consumer_app = tf.get("consumer_app", "")
+        producer_name = tf.get("producer_name", "")
+        consumer_name = tf.get("consumer_name", "")
+
+        producer_qm = tf.get("target_producer_qm", "")
+        consumer_qm = tf.get("target_consumer_qm", "")
+        routing_qm = tf.get("routing_target_qm", "")
+
+        producer_local_queue = tf.get("producer_local_queue", "")
+        consumer_local_queue = tf.get("consumer_local_queue", "")
+        remote_queue = tf.get("remote_queue", "")
+        xmit_queue = tf.get("xmit_queue", "")
+        sender_channel = tf.get("sender_channel", "")
+        receiver_channel = tf.get("receiver_channel", "")
+
+        requires_cross_qm = bool(tf.get("requires_cross_qm", False))
+        final_status = tf.get("final_status", "")
+        strategy = tf.get("strategy", "")
+        target_route_type = tf.get("target_route_type", "")
+        target_topology_pattern = tf.get("target_topology_pattern", "")
+        confidence = tf.get("confidence", "")
+
+        common = {
+            "flow_id": flow_id,
+            "producer_app": producer_app,
+            "consumer_app": consumer_app,
+            "producer_name": producer_name,
+            "consumer_name": consumer_name,
+            "producer_qm": producer_qm,
+            "consumer_qm": consumer_qm,
+            "routing_target_qm": routing_qm,
+            "requires_cross_qm": requires_cross_qm,
+            "final_status": final_status,
+            "strategy": strategy,
+            "target_route_type": target_route_type,
+            "target_topology_pattern": target_topology_pattern,
+            "confidence": confidence,
+        }
+
+        # Producer local queue row
+        rows.append({
+            **common,
+            "object_type": "PRODUCER_LOCAL_QUEUE",
+            "object_name": producer_local_queue,
+            "owning_qm": producer_qm,
+            "remote_target_qm": "",
+            "remote_target_name": "",
+            "channel_partner_qm": "",
+        })
+
+        # Cross-QM routing artifacts
+        if requires_cross_qm:
+            rows.append({
+                **common,
+                "object_type": "REMOTE_QUEUE",
+                "object_name": remote_queue,
+                "owning_qm": producer_qm,
+                "remote_target_qm": consumer_qm,
+                "remote_target_name": consumer_local_queue,
+                "channel_partner_qm": consumer_qm,
+            })
+
+            rows.append({
+                **common,
+                "object_type": "XMIT_QUEUE",
+                "object_name": xmit_queue,
+                "owning_qm": producer_qm,
+                "remote_target_qm": consumer_qm,
+                "remote_target_name": "",
+                "channel_partner_qm": consumer_qm,
+            })
+
+            rows.append({
+                **common,
+                "object_type": "SENDER_CHANNEL",
+                "object_name": sender_channel,
+                "owning_qm": producer_qm,
+                "remote_target_qm": consumer_qm,
+                "remote_target_name": "",
+                "channel_partner_qm": consumer_qm,
+            })
+
+            rows.append({
+                **common,
+                "object_type": "RECEIVER_CHANNEL",
+                "object_name": receiver_channel,
+                "owning_qm": consumer_qm,
+                "remote_target_qm": producer_qm,
+                "remote_target_name": "",
+                "channel_partner_qm": producer_qm,
+            })
+
+        # Consumer local queue row
+        rows.append({
+            **common,
+            "object_type": "CONSUMER_LOCAL_QUEUE",
+            "object_name": consumer_local_queue,
+            "owning_qm": consumer_qm,
+            "remote_target_qm": "",
+            "remote_target_name": "",
+            "channel_partner_qm": "",
+        })
+
+    df = pd.DataFrame(rows)
+
+    if not df.empty:
+        df = df.sort_values(
+            ["flow_id", "object_type", "owning_qm", "object_name"]
+        ).reset_index(drop=True)
+
+    return df
+
+
+def export_target_csv(target_flows: Dict[str, Dict[str, Any]],
+                      output_path: str = "target_topology.csv") -> pd.DataFrame:
+    """
+    Build and export the target CSV.
+    Returns the DataFrame as well.
+    """
+    df = build_target_csv_rows(target_flows)
+    df.to_csv(output_path, index=False)
+    return df
+# 1. Build explanation report
+explanation_report = build_explanation_report(
+    flows=flows,
+    final_decisions=final_decisions,
+    target_flows=validated_target_flows,
+    validation_results=validation_results,
+    complexity_comparison=complexity_comparison,
+)
+
+flow_report_df = explanation_report["flow_report_df"]
+summary = explanation_report["summary"]
+narrative = explanation_report["narrative"]
+
+# 2. Export target CSV
+target_csv_df = export_target_csv(
+    target_flows=validated_target_flows,
+    output_path="target_topology.csv"
+)
+
++++++++++++++++++++++++++++++++++++
+Schema-Compatible Target CSV Generator
+def build_target_csv_in_input_schema(
+    target_flows: dict,
+    flows: dict,
+    output_path: str = "target_topology_input_schema.csv"
+):
+    """
+    Convert target topology into ORIGINAL INPUT CSV SCHEMA.
+
+    This strictly preserves:
+    - column names
+    - column meaning
+    - row-level structure
+
+    Returns:
+        DataFrame
+    """
+
+    import pandas as pd
+
+    rows = []
+
+    for flow_id, tf in target_flows.items():
+
+        flow = flows.get(flow_id, {})
+
+        # --------------------------------------------------
+        # Extract metadata from AS-IS (STRICT RULE)
+        # --------------------------------------------------
+        producer_name = flow.get("producer_name", "")
+        consumer_name = flow.get("consumer_name", "")
+
+        producer_app = flow.get("producer_app", "")
+        consumer_app = flow.get("consumer_app", "")
+
+        producer_metadata = flow.get("producer_metadata", {})
+        consumer_metadata = flow.get("consumer_metadata", {})
+
+        # --------------------------------------------------
+        # Target fields
+        # --------------------------------------------------
+        producer_qm = tf.get("target_producer_qm", "")
+        consumer_qm = tf.get("target_consumer_qm", "")
+
+        producer_local_queue = tf.get("producer_local_queue", "")
+        consumer_local_queue = tf.get("consumer_local_queue", "")
+        remote_queue = tf.get("remote_queue", "")
+        xmit_queue = tf.get("xmit_queue", "")
+
+        sender_channel = tf.get("sender_channel", "")
+        receiver_channel = tf.get("receiver_channel", "")
+
+        requires_cross_qm = tf.get("requires_cross_qm", False)
+
+        # ==================================================
+        # Helper: Build base row
+        # ==================================================
+        def base_row(role, app_id, qm_name, metadata):
+            return {
+                "ProducerName": producer_name,
+                "ConsumerName": consumer_name,
+                "Primary App_Full_Name": metadata.get("Primary App_Full_Name", ""),
+                "PrimaryAppDisp": metadata.get("PrimaryAppDisp", ""),
+                "PrimaryAppRole": role,
+                "Primary Application Id": app_id,
+                "Primary Neighborhood": metadata.get("Primary Neighborhood", ""),
+                "Primary Hosting Type": metadata.get("Primary Hosting Type", ""),
+                "Primary Data classification": metadata.get("Primary Data classification", ""),
+                "Primary Enterprise Critical Payment Application": metadata.get("Primary Enterprise Critical Payment Application", ""),
+                "Primary PCI": metadata.get("Primary PCI", ""),
+                "Primary Publicly Accessible": metadata.get("Primary Publicly Accessible", ""),
+                "Primary TRTC": metadata.get("Primary TRTC", ""),
+                "q_type": "",
+                "queue_manager_name": qm_name,
+                "app_id": app_id,
+                "line_of_business": metadata.get("line_of_business", ""),
+                "cluster_name": metadata.get("cluster_name", ""),
+                "cluster_namelist": metadata.get("cluster_namelist", ""),
+                "def_persistence": metadata.get("def_persistence", ""),
+                "def_put_response": metadata.get("def_put_response", ""),
+                "inhibit_get": metadata.get("inhibit_get", ""),
+                "inhibit_put": metadata.get("inhibit_put", ""),
+                "remote_q_mgr_name": "",
+                "remote_q_name": "",
+                "usage": "",
+                "xmit_q_name": "",
+                "Neighborhood": metadata.get("Neighborhood", ""),
+            }
+
+        # ==================================================
+        # 1. Producer Local Queue
+        # ==================================================
+        row = base_row("Producer", producer_app, producer_qm, producer_metadata)
+        row.update({
+            "Discrete Queue Name": producer_local_queue,
+            "q_type": "Local"
+        })
+        rows.append(row)
+
+        # ==================================================
+        # 2. Remote Flow Objects (if cross-QM)
+        # ==================================================
+        if requires_cross_qm:
+
+            # Remote Queue
+            row = base_row("Producer", producer_app, producer_qm, producer_metadata)
+            row.update({
+                "Discrete Queue Name": remote_queue,
+                "q_type": "Remote",
+                "remote_q_mgr_name": consumer_qm,
+                "remote_q_name": consumer_local_queue,
+                "xmit_q_name": xmit_queue
+            })
+            rows.append(row)
+
+            # XMIT Queue
+            row = base_row("Producer", producer_app, producer_qm, producer_metadata)
+            row.update({
+                "Discrete Queue Name": xmit_queue,
+                "q_type": "XMIT"
+            })
+            rows.append(row)
+
+            # Sender Channel (modeled as logical row)
+            row = base_row("Producer", producer_app, producer_qm, producer_metadata)
+            row.update({
+                "Discrete Queue Name": sender_channel,
+                "q_type": "CHANNEL"
+            })
+            rows.append(row)
+
+            # Receiver Channel
+            row = base_row("Consumer", consumer_app, consumer_qm, consumer_metadata)
+            row.update({
+                "Discrete Queue Name": receiver_channel,
+                "q_type": "CHANNEL"
+            })
+            rows.append(row)
+
+        # ==================================================
+        # 3. Consumer Local Queue
+        # ==================================================
+        row = base_row("Consumer", consumer_app, consumer_qm, consumer_metadata)
+        row.update({
+            "Discrete Queue Name": consumer_local_queue,
+            "q_type": "Local"
+        })
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    # ------------------------------------------------------
+    # STRICT: Match original column order
+    # ------------------------------------------------------
+    expected_columns = [
+        "Discrete Queue Name",
+        "ProducerName",
+        "ConsumerName",
+        "Primary App_Full_Name",
+        "PrimaryAppDisp",
+        "PrimaryAppRole",
+        "Primary Application Id",
+        "Primary Neighborhood",
+        "Primary Hosting Type",
+        "Primary Data classification",
+        "Primary Enterprise Critical Payment Application",
+        "Primary PCI",
+        "Primary Publicly Accessible",
+        "Primary TRTC",
+        "q_type",
+        "queue_manager_name",
+        "app_id",
+        "line_of_business",
+        "cluster_name",
+        "cluster_namelist",
+        "def_persistence",
+        "def_put_response",
+        "inhibit_get",
+        "inhibit_put",
+        "remote_q_mgr_name",
+        "remote_q_name",
+        "usage",
+        "xmit_q_name",
+        "Neighborhood",
+    ]
+
+    df = df[expected_columns]
+
+    # ------------------------------------------------------
+    # Export
+    # ------------------------------------------------------
+    df.to_csv(output_path, index=False)
+
+    return df
