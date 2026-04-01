@@ -2471,3 +2471,187 @@ def run_mq_topology_pipeline(
         "target_csv_df": target_csv_df,
         "target_input_schema_df": target_input_schema_df,
     }
+# Read your input CSV
+df = pd.read_csv("your_input.csv")
+
+# Optional expert overrides
+expert_decisions = {
+    # "APP_A->APP_B": {
+    #     "target_producer_qm": "QM_APP_A",
+    #     "target_consumer_qm": "QM_APP_B",
+    #     "manual_review": False,
+    #     "exclude_from_target": False,
+    #     "reasons": ["expert_confirmed_target_ownership"],
+    #     "reason": "Reviewed and confirmed by architect"
+    # }
+}
+
+results = run_mq_topology_pipeline(
+    df=df,
+    expert_decisions=expert_decisions,
+    target_csv_path="target_topology.csv",
+    target_input_schema_csv_path="target_topology_input_schema.csv",
+)
+
+# Useful outputs
+flows = results["flows"]
+optimization_decisions = results["optimization_decisions"]
+final_decisions = results["final_decisions"]
+validated_target_flows = results["validated_target_flows"]
+validation_results = results["validation_results"]
+complexity_comparison = results["complexity_comparison"]
+flow_report_df = results["explanation_report"]["flow_report_df"]
+
+print(complexity_comparison["summary"])
+
+print(flow_report_df.head())
+import pandas as pd
+from typing import Dict, Any
+
+
+def build_data_quality_issues_report(
+    flows: Dict[str, Dict[str, Any]],
+    final_decisions: Dict[str, Dict[str, Any]] = None,
+    validation_results: Dict[str, Dict[str, Any]] = None,
+) -> pd.DataFrame:
+    """
+    Build a data-quality/issues report from refined flows and optional downstream results.
+
+    Captures:
+    - unknown producer / consumer
+    - orphan flows
+    - broken routing
+    - ambiguous flows
+    - multiple home QMs
+    - same-QM cross-app flows
+    - validation failures
+    """
+
+    rows = []
+
+    for flow_id, flow in flows.items():
+        producer_app = flow.get("producer_app", "")
+        consumer_app = flow.get("consumer_app", "")
+        producer_name = flow.get("producer_name", "")
+        consumer_name = flow.get("consumer_name", "")
+        producer_home_qm = flow.get("producer_home_qm", "")
+        consumer_home_qm = flow.get("consumer_home_qm", "")
+        routing_target_qm = flow.get("routing_target_qm", "")
+        resolution_status = flow.get("resolution_status", "")
+        ambiguity_type = flow.get("ambiguity_type", "")
+        match_confidence = flow.get("match_confidence", "")
+        issues = as_list(flow.get("issues", []))
+        descriptive_summary = flow.get("descriptive_summary", "")
+
+        health = flow.get("health", {}) or {}
+        is_as_is_broken = bool(health.get("is_as_is_broken", False))
+        is_orphaned_producer = bool(health.get("is_orphaned_producer", False))
+        path_continuity = health.get("path_continuity", "")
+
+        decision = (final_decisions or {}).get(flow_id, {})
+        validation = (validation_results or {}).get(flow_id, {})
+
+        final_status = decision.get("final_status", "")
+        strategy = decision.get("strategy", "")
+        manual_review = decision.get("manual_review", False)
+        exclude_from_target = decision.get("exclude_from_target", False)
+        decision_reasons = as_list(decision.get("reasons", []))
+
+        validation_status = validation.get("status", "")
+        validation_errors = as_list(validation.get("errors", []))
+        validation_warnings = as_list(validation.get("warnings", []))
+
+        # -------------------------
+        # Issue categories
+        # -------------------------
+        dq_categories = []
+
+        if producer_app in {"UNKNOWN_P", "UNKNOWN_PRODUCER", ""}:
+            dq_categories.append("unknown_producer")
+
+        if consumer_app in {"UNKNOWN_C", "UNKNOWN_CONSUMER", ""}:
+            dq_categories.append("unknown_consumer")
+
+        if is_orphaned_producer or resolution_status == "ORPHAN":
+            dq_categories.append("orphan_flow")
+
+        if is_as_is_broken or resolution_status == "UNRESOLVED":
+            dq_categories.append("broken_or_unresolved_flow")
+
+        if resolution_status in {"QM_ONLY_MATCH", "QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}:
+            dq_categories.append("ambiguous_flow")
+
+        if "multiple_producer_home_qms" in issues:
+            dq_categories.append("multiple_producer_home_qms")
+
+        if "multiple_consumer_home_qms" in issues:
+            dq_categories.append("multiple_consumer_home_qms")
+
+        if "multiple_routing_target_qms" in issues:
+            dq_categories.append("multiple_routing_target_qms")
+
+        if "same_qm_cross_app_flow_in_asis" in issues:
+            dq_categories.append("same_qm_cross_app_flow")
+
+        if "alias_without_target" in issues:
+            dq_categories.append("alias_without_target")
+
+        if validation_status == "INVALID":
+            dq_categories.append("target_validation_failure")
+
+        # Only include rows that have some issue
+        if not dq_categories:
+            continue
+
+        rows.append({
+            "flow_id": flow_id,
+            "producer_app": producer_app,
+            "consumer_app": consumer_app,
+            "producer_name": producer_name,
+            "consumer_name": consumer_name,
+            "producer_home_qm": " | ".join(as_list(producer_home_qm)),
+            "consumer_home_qm": " | ".join(as_list(consumer_home_qm)),
+            "routing_target_qm": " | ".join(as_list(routing_target_qm)),
+            "resolution_status": resolution_status,
+            "ambiguity_type": ambiguity_type,
+            "match_confidence": match_confidence,
+            "path_continuity": path_continuity,
+            "is_as_is_broken": is_as_is_broken,
+            "is_orphaned_producer": is_orphaned_producer,
+            "issues": " | ".join(sorted(set(issues))),
+            "dq_categories": " | ".join(sorted(set(dq_categories))),
+            "final_status": final_status,
+            "strategy": strategy,
+            "manual_review": manual_review,
+            "exclude_from_target": exclude_from_target,
+            "decision_reasons": " | ".join(sorted(set(decision_reasons))),
+            "validation_status": validation_status,
+            "validation_errors": " | ".join(sorted(set(validation_errors))),
+            "validation_warnings": " | ".join(sorted(set(validation_warnings))),
+            "descriptive_summary": descriptive_summary,
+        })
+
+    report_df = pd.DataFrame(rows)
+
+    if not report_df.empty:
+        sort_cols = [c for c in ["exclude_from_target", "manual_review", "flow_id"] if c in report_df.columns]
+        ascending = [False, False, True][:len(sort_cols)]
+        report_df = report_df.sort_values(sort_cols, ascending=ascending).reset_index(drop=True)
+
+    return report_df
+
+results = run_mq_topology_pipeline(
+    df=df,
+    expert_decisions=expert_decisions,
+    target_csv_path="target_topology.csv",
+    target_input_schema_csv_path="target_topology_input_schema.csv",
+)
+
+data_quality_report_df = build_data_quality_issues_report(
+    flows=results["flows"],
+    final_decisions=results["final_decisions"],
+    validation_results=results["validation_results"],
+)
+
+data_quality_report_df.to_csv("data_quality_issues_report.csv", index=False)
+print(data_quality_report_df.head())
