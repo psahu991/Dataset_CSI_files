@@ -1,0 +1,268 @@
+def build_optimization_decisions(flows,
+                                 flow_metrics=None,
+                                 node_metrics=None,
+                                 routing_analysis=None,
+                                 nodes=None):
+    """
+    FINAL SUBMISSION-GRADE DECISION ENGINE
+
+    Responsibilities:
+    1. Interpret AS-IS topology (rich extractor)
+    2. Enforce target-state constraints
+    3. Detect anomalies (health)
+    4. Classify ambiguity
+    5. Propose canonical transformation
+    6. Prepare for expert override
+    7. Generate explanation-ready outputs
+
+    This is the CORE reasoning layer for the hackathon.
+    """
+
+    decisions = {}
+
+    for flow_id, flow in flows.items():
+
+        # =====================================================
+        # Extract all relevant sections
+        # =====================================================
+        analysis = flow.get("analysis", {})
+        as_is = flow.get("as_is", {})
+        health = flow.get("health", {})
+        issues = flow.get("issues", [])
+
+        producer_app = flow.get("producer_app")
+        consumer_app = flow.get("consumer_app")
+
+        producer_qm = flow.get("producer_home_qm")
+        consumer_qm = flow.get("consumer_home_qm")
+
+        routing_target_qm = flow.get("routing_target_qm")
+
+        resolution_status = flow.get("resolution_status")
+        ambiguity_type = flow.get("ambiguity_type")
+        transformation_strategy = flow.get("transformation_strategy")
+        routing_pattern = flow.get("routing_pattern")
+
+        validated_target_queues = flow.get("validated_target_queues", [])
+        producer_remote_objects = flow.get("producer_remote_queue_objects", [])
+        consumer_local_queues = flow.get("consumer_local_queues", [])
+
+        has_remote = flow.get("has_remote")
+        has_alias = flow.get("has_alias")
+        has_local_only = flow.get("has_local_only")
+
+        target_requires_remote_pattern = flow.get("target_requires_remote_pattern")
+
+        # Health
+        is_broken = health.get("is_as_is_broken", False)
+        is_orphan = health.get("is_orphaned_producer", False)
+        path_continuity = health.get("path_continuity")
+
+        # =====================================================
+        # Initialize decision object
+        # =====================================================
+        decision = {
+            "flow_id": flow_id,
+
+            # Core decision
+            "strategy": None,
+            "decision_family": None,
+            "target_route_type": None,
+            "target_topology_pattern": None,
+            "target_validity": None,
+
+            # Ownership
+            "target_producer_qm": None,
+            "target_consumer_qm": None,
+            "normalize_producer_ownership": False,
+            "normalize_consumer_ownership": False,
+
+            # Cleanup actions
+            "remove_alias": False,
+            "remove_intermediate_qms": [],
+            "remove_remote_queue_objects": [],
+            "preserve_validated_target_queues": [],
+            "drop_unvalidated_target_queues": [],
+
+            # Governance
+            "manual_review": False,
+            "exclude_from_target": False,
+            "human_override_recommended": False,
+
+            # Explanation
+            "confidence": "MEDIUM",
+            "reasons": [],
+            "warnings": [],
+            "decision_notes": [],
+            "target_design_actions": [],
+        }
+
+        # =====================================================
+        # 1. HARD FAILURES / EXCLUSIONS
+        # =====================================================
+        if resolution_status in ["UNRESOLVED", "ORPHAN"] or is_orphan:
+
+            decision.update({
+                "strategy": "exclude_from_target",
+                "decision_family": "invalid_flow",
+                "exclude_from_target": True,
+                "manual_review": True,
+                "human_override_recommended": True,
+                "confidence": "LOW",
+            })
+
+            decision["reasons"].append("unresolved_or_orphan_flow")
+            decision["warnings"].append("flow_has_no_reliable_target_mapping")
+
+            decisions[flow_id] = decision
+            continue
+
+        # =====================================================
+        # 2. BROKEN AS-IS (VERY IMPORTANT)
+        # =====================================================
+        if is_broken:
+            decision["strategy"] = "force_canonical_redesign"
+            decision["decision_family"] = "broken_topology"
+            decision["target_route_type"] = "cross_qm_canonical"
+            decision["manual_review"] = True
+            decision["human_override_recommended"] = True
+            decision["confidence"] = "LOW"
+
+            decision["reasons"].append("broken_routing_detected")
+            decision["warnings"].append("asis_path_not_connected_to_consumer_qm")
+            decision["decision_notes"].append(
+                f"path_continuity={path_continuity}"
+            )
+
+        # =====================================================
+        # 3. OWNERSHIP NORMALIZATION
+        # =====================================================
+        if isinstance(producer_qm, list):
+            decision["normalize_producer_ownership"] = True
+            decision["manual_review"] = True
+            decision["human_override_recommended"] = True
+            decision["reasons"].append("multiple_producer_home_qms")
+
+        if isinstance(consumer_qm, list):
+            decision["normalize_consumer_ownership"] = True
+            decision["manual_review"] = True
+            decision["human_override_recommended"] = True
+            decision["reasons"].append("multiple_consumer_home_qms")
+
+        # =====================================================
+        # 4. LOCAL FLOW SPLIT (CRITICAL CONSTRAINT)
+        # =====================================================
+        if transformation_strategy == "SPLIT_LOCAL_TO_REMOTE":
+
+            decision.update({
+                "strategy": "split_local_to_remote",
+                "decision_family": "constraint_enforcement",
+                "target_route_type": "cross_qm_canonical",
+                "target_topology_pattern": "producer_local_remote_xmit_channel_consumer_local",
+                "target_validity": "requires_transformation",
+                "target_producer_qm": f"QM_{producer_app}",
+                "target_consumer_qm": f"QM_{consumer_app}",
+                "confidence": "HIGH",
+            })
+
+            decision["reasons"].append("cross_app_local_flow_must_be_split")
+            decision["target_design_actions"].append("introduce_remote_queue")
+            decision["target_design_actions"].append("introduce_xmit_queue")
+            decision["target_design_actions"].append("introduce_channels")
+
+            decisions[flow_id] = decision
+            continue
+
+        # =====================================================
+        # 5. CLEAN REMOTE FLOW (BEST CASE)
+        # =====================================================
+        if resolution_status == "INDIRECT_COMPLETE":
+
+            decision.update({
+                "strategy": "direct_route_to_consumer_qm",
+                "decision_family": "validated_flow",
+                "target_route_type": "cross_qm_canonical",
+                "target_topology_pattern": "direct_qm_to_qm",
+                "target_validity": "valid",
+                "target_producer_qm": producer_qm,
+                "target_consumer_qm": consumer_qm,
+                "confidence": "HIGH",
+            })
+
+            decision["preserve_validated_target_queues"] = validated_target_queues
+            decision["remove_remote_queue_objects"] = producer_remote_objects
+            decision["remove_alias"] = has_alias
+
+            decision["reasons"].append("validated_remote_flow")
+            decision["target_design_actions"].append("remove_intermediate_routing")
+
+            decisions[flow_id] = decision
+            continue
+
+        # =====================================================
+        # 6. AMBIGUOUS FLOWS
+        # =====================================================
+        if resolution_status in ["QM_ONLY_MATCH", "QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"]:
+
+            decision.update({
+                "strategy": "manual_review_before_target",
+                "decision_family": "ambiguous_flow",
+                "exclude_from_target": True,
+                "manual_review": True,
+                "human_override_recommended": True,
+                "confidence": "LOW",
+            })
+
+            decision["reasons"].append("ambiguous_flow")
+            decision["decision_notes"].append(f"ambiguity_type={ambiguity_type}")
+
+            decisions[flow_id] = decision
+            continue
+
+        # =====================================================
+        # 7. REMOTE BUT NOT CLEAN (REQUIRES RE-DESIGN)
+        # =====================================================
+        if has_remote and target_requires_remote_pattern:
+
+            decision.update({
+                "strategy": "canonicalize_remote_flow",
+                "decision_family": "optimization",
+                "target_route_type": "cross_qm_canonical",
+                "target_topology_pattern": "direct_qm_to_qm",
+                "target_validity": "requires_cleanup",
+                "target_producer_qm": f"QM_{producer_app}",
+                "target_consumer_qm": f"QM_{consumer_app}",
+                "confidence": "MEDIUM",
+            })
+
+            decision["remove_remote_queue_objects"] = producer_remote_objects
+            decision["remove_alias"] = has_alias
+            decision["drop_unvalidated_target_queues"] = [
+                q for q in flow.get("target_queues", [])
+                if q not in validated_target_queues
+            ]
+
+            decision["reasons"].append("remote_flow_requires_standardization")
+
+            decisions[flow_id] = decision
+            continue
+
+        # =====================================================
+        # 8. DEFAULT FALLBACK (SAFE CANONICAL DESIGN)
+        # =====================================================
+        decision.update({
+            "strategy": "default_canonical_routing",
+            "decision_family": "fallback",
+            "target_route_type": "cross_qm_canonical",
+            "target_topology_pattern": "producer_to_consumer_direct",
+            "target_validity": "assumed_valid",
+            "target_producer_qm": f"QM_{producer_app}",
+            "target_consumer_qm": f"QM_{consumer_app}",
+            "confidence": "MEDIUM",
+        })
+
+        decision["reasons"].append("fallback_canonical_design")
+
+        decisions[flow_id] = decision
+
+    return decisions
