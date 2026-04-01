@@ -1,0 +1,378 @@
+def build_optimization_decisions(
+    flows,
+    flow_metrics,
+    node_metrics,
+    routing_analysis,
+    nodes,
+):
+    """
+    Strict decision engine aligned to the latest extractor, graph metrics,
+    routing analysis, and target-state constraints.
+
+    Important update:
+    - If ownership is ambiguous (multiple home QMs), DO NOT propagate list-valued
+      AS-IS QMs into target_producer_qm / target_consumer_qm.
+    - Instead assign canonical target QMs: QM_<APP_ID>
+    - Keep manual_review=True so expert override can still refine it.
+    """
+
+    def canonical_target_qm(app_id: str) -> str:
+        return f"QM_{str(app_id).strip()}" if str(app_id).strip() else ""
+
+    decisions = {}
+
+    for flow_id, flow in flows.items():
+
+        producer_app = flow.get("producer_app", "")
+        consumer_app = flow.get("consumer_app", "")
+
+        producer_qm = flow.get("producer_home_qm", "")
+        consumer_qm = flow.get("consumer_home_qm", "")
+        routing_target_qm = flow.get("routing_target_qm", "")
+
+        has_remote = bool(flow.get("has_remote", False))
+        has_alias = bool(flow.get("has_alias", False))
+        has_local_only = bool(flow.get("has_local_only", False))
+
+        resolution_status = flow.get("resolution_status", "UNRESOLVED")
+        ambiguity_type = flow.get("ambiguity_type")
+        match_confidence = flow.get("match_confidence", "LOW")
+        transformation_strategy = flow.get("transformation_strategy", "REVIEW")
+
+        issues = set(as_list(flow.get("issues", [])))
+        health = flow.get("health", {}) or {}
+        is_as_is_broken = bool(health.get("is_as_is_broken", False))
+        is_orphaned_producer = bool(health.get("is_orphaned_producer", False))
+        path_continuity = health.get("path_continuity", "")
+
+        routing_info = routing_analysis.get(flow_id, {}) if routing_analysis else {}
+        qm_path = routing_info.get("path", flow.get("qm_path", []))
+        uses_intermediate_qm = bool(routing_info.get("uses_intermediate_qm", False))
+
+        flow_metric = flow_metrics.get(flow_id, {}) if flow_metrics else {}
+        hop_count = flow_metric.get("hop_count", max(len(qm_path) - 1, 0))
+
+        same_app = (
+            producer_app
+            and consumer_app
+            and producer_app == consumer_app
+            and not producer_app.startswith("UNKNOWN")
+            and not consumer_app.startswith("UNKNOWN")
+        )
+
+        producer_qm_is_ambiguous = isinstance(producer_qm, list) or "multiple_producer_home_qms" in issues
+        consumer_qm_is_ambiguous = isinstance(consumer_qm, list) or "multiple_consumer_home_qms" in issues
+
+        # Canonical target ownership baseline
+        canonical_producer_qm = canonical_target_qm(producer_app)
+        canonical_consumer_qm = canonical_target_qm(consumer_app)
+
+        decision = {
+            "flow_id": flow_id,
+
+            # High-level target choice
+            "strategy": None,
+            "decision_family": None,
+            "target_route_type": None,
+            "target_topology_pattern": None,
+            "target_validity": None,
+
+            # Ownership
+            "target_producer_qm": None,
+            "target_consumer_qm": None,
+            "normalize_producer_ownership": False,
+            "normalize_consumer_ownership": False,
+
+            # Cleanup
+            "remove_alias": False,
+            "remove_intermediate_qms": [],
+            "remove_remote_queue_objects": [],
+            "preserve_validated_target_queues": [],
+            "drop_unvalidated_target_queues": [],
+
+            # Governance
+            "manual_review": False,
+            "exclude_from_target": False,
+            "human_override_recommended": False,
+
+            # Explanation
+            "confidence": match_confidence,
+            "reasons": [],
+            "warnings": [],
+            "decision_notes": [],
+            "target_design_actions": [],
+            "node_insights": [],
+        }
+
+        # ----------------------------------------------------
+        # 1. Hard stop / invalid / orphan
+        # ----------------------------------------------------
+        if producer_app in {"", "UNKNOWN_P", "UNKNOWN_PRODUCER"} or consumer_app in {"", "UNKNOWN_C", "UNKNOWN_CONSUMER"}:
+            decision.update({
+                "strategy": "exclude_from_target",
+                "decision_family": "invalid_flow",
+                "exclude_from_target": True,
+                "manual_review": True,
+                "human_override_recommended": True,
+                "target_validity": "not_target_ready",
+                "confidence": "LOW",
+            })
+            decision["reasons"].append("unknown_endpoint")
+            decision["warnings"].append("flow_has_unknown_endpoint")
+            decisions[flow_id] = decision
+            continue
+
+        if is_orphaned_producer or resolution_status == "ORPHAN":
+            decision.update({
+                "strategy": "exclude_from_target",
+                "decision_family": "invalid_flow",
+                "exclude_from_target": True,
+                "manual_review": True,
+                "human_override_recommended": True,
+                "target_validity": "not_target_ready",
+                "confidence": "LOW",
+            })
+            decision["reasons"].append("orphan_flow")
+            decision["warnings"].append("producer_has_no_valid_target_path")
+            decisions[flow_id] = decision
+            continue
+
+        # ----------------------------------------------------
+        # 2. Broken AS-IS topology
+        # ----------------------------------------------------
+        if is_as_is_broken:
+            decision.update({
+                "strategy": "force_canonical_redesign",
+                "decision_family": "broken_topology",
+                "target_route_type": "cross_qm_canonical",
+                "target_topology_pattern": "producer_local_remote_xmit_channel_consumer_local",
+                "target_validity": "requires_redesign",
+                "target_producer_qm": canonical_producer_qm,
+                "target_consumer_qm": canonical_consumer_qm,
+                "manual_review": True,
+                "human_override_recommended": True,
+                "confidence": "LOW",
+            })
+            decision["reasons"].append("broken_routing_detected")
+            if path_continuity:
+                decision["decision_notes"].append(f"path_continuity={path_continuity}")
+
+        # ----------------------------------------------------
+        # 3. Node / routing structural insights
+        # ----------------------------------------------------
+        hotspot_qms = []
+        removable_intermediate_qms = []
+
+        for qm in qm_path:
+            if qm in node_metrics:
+                if node_metrics[qm].get("is_hotspot", False):
+                    hotspot_qms.append(qm)
+
+        if hotspot_qms:
+            decision["node_insights"].append(f"hotspot_qms={sorted(set(hotspot_qms))}")
+
+        if uses_intermediate_qm and len(qm_path) > 2:
+            for qm in qm_path[1:-1]:
+                if qm in node_metrics and node_metrics[qm].get("is_routing_only", False):
+                    removable_intermediate_qms.append(qm)
+
+        if removable_intermediate_qms:
+            decision["remove_intermediate_qms"] = sorted(set(removable_intermediate_qms))
+            decision["reasons"].append("remove_routing_only_qms")
+
+        # ----------------------------------------------------
+        # 4. Ownership normalization
+        # IMPORTANT UPDATE:
+        # ambiguous ownership -> canonical target QMs, not list-valued AS-IS QMs
+        # ----------------------------------------------------
+        if producer_qm_is_ambiguous:
+            decision["normalize_producer_ownership"] = True
+            decision["manual_review"] = True
+            decision["human_override_recommended"] = True
+            decision["reasons"].append("multiple_producer_home_qms")
+            decision["target_producer_qm"] = canonical_producer_qm
+            decision["decision_notes"].append(
+                "Producer ownership is ambiguous in AS-IS; assigned canonical target QM pending expert confirmation."
+            )
+        elif not decision["target_producer_qm"]:
+            decision["target_producer_qm"] = producer_qm if not isinstance(producer_qm, list) else canonical_producer_qm
+
+        if consumer_qm_is_ambiguous:
+            decision["normalize_consumer_ownership"] = True
+            decision["manual_review"] = True
+            decision["human_override_recommended"] = True
+            decision["reasons"].append("multiple_consumer_home_qms")
+            decision["target_consumer_qm"] = canonical_consumer_qm
+            decision["decision_notes"].append(
+                "Consumer ownership is ambiguous in AS-IS; assigned canonical target QM pending expert confirmation."
+            )
+        elif not decision["target_consumer_qm"]:
+            decision["target_consumer_qm"] = consumer_qm if not isinstance(consumer_qm, list) else canonical_consumer_qm
+
+        # ----------------------------------------------------
+        # 5. Alias cleanup
+        # ----------------------------------------------------
+        if has_alias:
+            decision["remove_alias"] = True
+            decision["reasons"].append("alias_objects_should_be_removed")
+            decision["target_design_actions"].append("remove_alias_objects")
+
+        # ----------------------------------------------------
+        # 6. Local-only flows
+        # ----------------------------------------------------
+        if transformation_strategy == "SPLIT_LOCAL_TO_REMOTE":
+            decision.update({
+                "strategy": "split_local_to_remote",
+                "decision_family": "constraint_enforcement",
+                "target_route_type": "cross_qm_canonical",
+                "target_topology_pattern": "producer_local_remote_xmit_channel_consumer_local",
+                "target_validity": "requires_redesign",
+                "target_producer_qm": canonical_producer_qm,
+                "target_consumer_qm": canonical_consumer_qm,
+                "confidence": "HIGH",
+            })
+            decision["reasons"].append("cross_app_or_cross_environment_local_flow")
+            decision["reasons"].append("target_constraint_requires_separate_qms")
+            decision["target_design_actions"].extend([
+                "create_producer_local_queue",
+                "create_remote_queue_object",
+                "create_xmit_queue",
+                "create_sender_receiver_channels",
+                "create_consumer_local_queue",
+            ])
+            decisions[flow_id] = decision
+            continue
+
+        if transformation_strategy in {"STAY_LOCAL", "STAY_LOCAL_SAME_APP"}:
+            if same_app:
+                decision.update({
+                    "strategy": "canonicalize_local_flow",
+                    "decision_family": "valid_local_flow",
+                    "target_route_type": "local_only",
+                    "target_topology_pattern": "single_app_single_qm_local_queue",
+                    "target_validity": "valid_target_local",
+                    "target_producer_qm": decision["target_producer_qm"] or canonical_producer_qm,
+                    "target_consumer_qm": decision["target_consumer_qm"] or canonical_consumer_qm,
+                    "confidence": "HIGH",
+                })
+                decision["reasons"].append("same_app_local_flow_allowed")
+                decision["target_design_actions"].append("retain_local_pattern")
+                decisions[flow_id] = decision
+                continue
+            else:
+                decision.update({
+                    "strategy": "split_local_to_remote",
+                    "decision_family": "constraint_enforcement",
+                    "target_route_type": "cross_qm_canonical",
+                    "target_topology_pattern": "producer_local_remote_xmit_channel_consumer_local",
+                    "target_validity": "requires_redesign",
+                    "target_producer_qm": canonical_producer_qm,
+                    "target_consumer_qm": canonical_consumer_qm,
+                    "confidence": "MEDIUM",
+                })
+                decision["reasons"].append("cross_app_local_flow_not_allowed")
+                decisions[flow_id] = decision
+                continue
+
+        # ----------------------------------------------------
+        # 7. Clean remote flow
+        # IMPORTANT UPDATE:
+        # validated routing + ambiguous ownership => keep manual review,
+        # but assign canonical target QMs, not legacy QM lists
+        # ----------------------------------------------------
+        if resolution_status == "INDIRECT_COMPLETE":
+            decision.update({
+                "strategy": "direct_route_to_consumer_qm",
+                "decision_family": "validated_flow",
+                "target_route_type": "cross_qm_canonical",
+                "target_topology_pattern": "direct_qm_to_qm",
+                "target_validity": "valid" if not (producer_qm_is_ambiguous or consumer_qm_is_ambiguous) else "valid_routing_but_ownership_needs_normalization",
+                "target_producer_qm": canonical_producer_qm if producer_qm_is_ambiguous else (decision["target_producer_qm"] or producer_qm),
+                "target_consumer_qm": canonical_consumer_qm if consumer_qm_is_ambiguous else (decision["target_consumer_qm"] or consumer_qm),
+                "confidence": "HIGH",
+            })
+            decision["reasons"].append("validated_remote_flow")
+
+            if producer_qm_is_ambiguous or consumer_qm_is_ambiguous:
+                decision["manual_review"] = True
+                decision["human_override_recommended"] = True
+                decision["reasons"].append("ownership_normalization_required")
+                decision["decision_notes"].append(
+                    "Routing is validated, but target ownership is canonicalized because AS-IS ownership is ambiguous."
+                )
+
+            if removable_intermediate_qms:
+                decision["reasons"].append("simplified_routing_path")
+                decision["target_design_actions"].append("remove_intermediate_routing")
+
+            decisions[flow_id] = decision
+            continue
+
+        # ----------------------------------------------------
+        # 8. Ambiguous flows
+        # ----------------------------------------------------
+        if resolution_status in {"QM_ONLY_MATCH", "QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}:
+            decision.update({
+                "strategy": "manual_review_before_target",
+                "decision_family": "ambiguous_flow",
+                "exclude_from_target": True,
+                "manual_review": True,
+                "human_override_recommended": True,
+                "target_validity": "not_target_ready",
+                "confidence": "LOW",
+            })
+            decision["reasons"].append("ambiguous_flow")
+            if ambiguity_type:
+                decision["decision_notes"].append(f"ambiguity_type={ambiguity_type}")
+            decisions[flow_id] = decision
+            continue
+
+        # ----------------------------------------------------
+        # 9. Remote but not fully trusted
+        # ----------------------------------------------------
+        if has_remote:
+            decision.update({
+                "strategy": "canonicalize_remote_flow",
+                "decision_family": "remote_cleanup",
+                "target_route_type": "cross_qm_canonical",
+                "target_topology_pattern": "producer_local_remote_xmit_channel_consumer_local",
+                "target_validity": "requires_cleanup",
+                "target_producer_qm": canonical_producer_qm if producer_qm_is_ambiguous else (decision["target_producer_qm"] or canonical_producer_qm),
+                "target_consumer_qm": canonical_consumer_qm if consumer_qm_is_ambiguous else (decision["target_consumer_qm"] or canonical_consumer_qm),
+                "confidence": "MEDIUM",
+            })
+            decision["reasons"].append("remote_flow_requires_standardization")
+            decision["target_design_actions"].extend([
+                "replace_noncanonical_remote_routing",
+                "standardize_qm_to_qm_route",
+            ])
+
+            if producer_qm_is_ambiguous or consumer_qm_is_ambiguous:
+                decision["manual_review"] = True
+                decision["human_override_recommended"] = True
+                decision["reasons"].append("ownership_normalization_required")
+
+            decisions[flow_id] = decision
+            continue
+
+        # ----------------------------------------------------
+        # 10. Final fallback
+        # ----------------------------------------------------
+        decision.update({
+            "strategy": "default_canonical_routing",
+            "decision_family": "fallback",
+            "target_route_type": "cross_qm_canonical",
+            "target_topology_pattern": "producer_local_remote_xmit_channel_consumer_local",
+            "target_validity": "assumed_valid",
+            "target_producer_qm": canonical_producer_qm,
+            "target_consumer_qm": canonical_consumer_qm,
+            "confidence": "MEDIUM",
+        })
+        decision["reasons"].append("fallback_canonical_design")
+
+        if hotspot_qms:
+            decision["reasons"].append("hotspot_detected_requires_standardization")
+
+        decisions[flow_id] = decision
+
+    return decisions
