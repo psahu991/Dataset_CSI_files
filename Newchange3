@@ -1,0 +1,194 @@
+Understood. If it is still not flowing through, then the problem is not only the ambiguity block anymore.
+We need to isolate where it is being dropped.
+Do these checks in order. This will tell you the exact stage where 8A->OK disappears.
+1. Check extractor output first
+Right after:
+Python
+flows = extract_flows_refined_submission_grade(df)
+add:
+Python
+flow_id = "8A->OK"
+
+if flow_id in flows:
+    f = flows[flow_id]
+    print("FLOW FOUND IN EXTRACTOR")
+    print("resolution_status =", f.get("resolution_status"))
+    print("ambiguity_type =", f.get("ambiguity_type"))
+    print("match_confidence =", f.get("match_confidence"))
+    print("routing_target_qm =", f.get("routing_target_qm"))
+    print("consumer_home_qm =", f.get("consumer_home_qm"))
+    print("candidate_consumer_qms =", f.get("candidate_consumer_qms"))
+    print("is_as_is_broken =", f.get("health", {}).get("is_as_is_broken"))
+    print("is_orphaned_producer =", f.get("health", {}).get("is_orphaned_producer"))
+    print("issues =", f.get("issues"))
+else:
+    print("FLOW 8A->OK NOT FOUND IN EXTRACTOR")
+What you should see
+You need this:
+Python
+resolution_status = QM_ONLY_MATCH
+is_as_is_broken = False
+is_orphaned_producer = False
+If it is still showing:
+ORPHAN
+or UNRESOLVED
+then the problem is still in the extractor, not the optimizer.
+2. Check optimization decision stage
+Right after:
+Python
+optimization_decisions = build_optimization_decisions(...)
+add:
+Python
+flow_id = "8A->OK"
+
+if flow_id in optimization_decisions:
+    d = optimization_decisions[flow_id]
+    print("FLOW FOUND IN OPTIMIZER")
+    print("strategy =", d.get("strategy"))
+    print("decision_family =", d.get("decision_family"))
+    print("exclude_from_target =", d.get("exclude_from_target"))
+    print("manual_review =", d.get("manual_review"))
+    print("target_validity =", d.get("target_validity"))
+    print("target_producer_qm =", d.get("target_producer_qm"))
+    print("target_consumer_qm =", d.get("target_consumer_qm"))
+    print("reasons =", d.get("reasons"))
+else:
+    print("FLOW 8A->OK NOT FOUND IN OPTIMIZER")
+What you should see
+You need this:
+Python
+exclude_from_target = False
+manual_review = False
+target_validity = target_ready
+If not, then the optimizer block is still wrong or another earlier block is catching the flow before the QM_ONLY_MATCH block.
+3. Check final decisions after merge
+Right after:
+Python
+final_decisions = extract_final_decisions(merged_decisions)
+add:
+Python
+flow_id = "8A->OK"
+
+if flow_id in final_decisions:
+    d = final_decisions[flow_id]
+    print("FLOW FOUND IN FINAL_DECISIONS")
+    print("final_status =", d.get("final_status"))
+    print("exclude_from_target =", d.get("exclude_from_target"))
+    print("manual_review =", d.get("manual_review"))
+    print("target_validity =", d.get("target_validity"))
+else:
+    print("FLOW 8A->OK NOT FOUND IN FINAL_DECISIONS")
+What you should see
+You need:
+Python
+final_status = approved
+If you see:
+excluded
+or needs_review
+then extract_final_decisions() is turning it into a blocked flow.
+4. Check target flow builder
+Right after:
+Python
+target_flows = build_optimized_target_flows(flows, final_decisions)
+add:
+Python
+flow_id = "8A->OK"
+print("IN TARGET_FLOWS =", flow_id in target_flows)
+
+if flow_id in target_flows:
+    tf = target_flows[flow_id]
+    print("target_producer_qm =", tf.get("target_producer_qm"))
+    print("target_consumer_qm =", tf.get("target_consumer_qm"))
+    print("requires_cross_qm =", tf.get("requires_cross_qm"))
+    print("remote_queue =", tf.get("remote_queue"))
+    print("consumer_local_queue =", tf.get("consumer_local_queue"))
+If this prints False, then the flow is being filtered in build_optimized_target_flows().
+5. Most likely reasons it is still not flowing through
+These are the most common blockers.
+Case A — extractor is still returning ORPHAN
+That means your global consumer-QM mapping is not actually finding OK -> WQ26.
+Then print this inside the extractor just before exact_qm_match:
+Python
+print("DEBUG", flow_id, "consumer_app =", consumer_app, "global_consumer_local_qms =", global_consumer_local_qms)
+If global_consumer_local_qms is empty, your full-dataset map is not finding the consumer app.
+Why that happens
+Because your consumer app may not be keyed by app_id the way you expect in the “consumer-local” rows.
+For your sample, there are two identities in play:
+ConsumerName
+app_id
+Your current global map uses app_id.
+If the grouped flow is consumer_app = OK but the local rows are captured differently, the map may miss.
+Case B — another optimizer block runs before QM_ONLY_MATCH
+If you still have an earlier block like:
+Python
+if is_as_is_broken:
+    ...
+    continue
+or
+Python
+if is_orphaned_producer:
+    ...
+    continue
+then the QM_ONLY_MATCH block is never reached.
+That is why step 2 is important.
+Case C — final decisions are marking it needs_review
+If extract_final_decisions() says:
+Python
+elif record.get("manual_review", False):
+    record["final_status"] = "needs_review"
+and later build_optimized_target_flows() filters needs_review, it will disappear.
+6. One likely real issue in your case
+For your 8A -> OK example, I strongly suspect this:
+The global consumer QM map is being built from app_id
+but the consumer identity you need may not line up consistently across all local rows.
+So instead of only mapping by app_id, build both:
+app_id → local QMs
+ConsumerName → local QMs
+Then use whichever matches.
+Minimal fix
+Replace the global map block with this:
+Python
+# --------------------------------------------------------
+    # GLOBAL CONSUMER EVIDENCE MAPS
+    # Use full dataset evidence, not only current grouped rows
+    # --------------------------------------------------------
+    app_local_qm_map: Dict[str, set] = {}
+    consumer_name_local_qm_map: Dict[str, set] = {}
+
+    local_df_for_map = df[df["q_type_norm"].str.contains("Local", case=False, na=False)].copy()
+
+    for _, row in local_df_for_map.iterrows():
+        app_id = normalize_text(row.get("app_id", ""))
+        consumer_name_val = normalize_text(row.get("ConsumerName", ""))
+        qm_name = normalize_text(row.get("queue_manager_name", ""))
+
+        if app_id and qm_name:
+            app_local_qm_map.setdefault(app_id, set()).add(qm_name)
+
+        if consumer_name_val and qm_name:
+            consumer_name_local_qm_map.setdefault(consumer_name_val, set()).add(qm_name)
+Then replace:
+Python
+global_consumer_local_qms = sorted(app_local_qm_map.get(consumer_app, set()))
+with:
+Python
+global_consumer_local_qms = sorted(
+            set(app_local_qm_map.get(consumer_app, set())) |
+            set(consumer_name_local_qm_map.get(consumer_name, set()))
+        )
+This is likely the missing piece if 8A->OK still does not move forward.
+7. Strict conclusion
+If the flow is still not flowing through, then one of these is true:
+extractor still says ORPHAN or UNRESOLVED
+optimizer never reaches the QM_ONLY_MATCH branch
+final decisions convert it back to blocked status
+target builder filters needs_review
+global QM evidence is not matching because app identity is not enough
+8. What to do now
+Run the 4 debug checkpoints above.
+The most important first one is this:
+Python
+print(flows["8A->OK"]["resolution_status"])
+print(flows["8A->OK"]["candidate_consumer_qms"])
+print(flows["8A->OK"]["health"])
+Paste those 3 outputs here and I’ll tell you exactly which single line is still blocking it.
