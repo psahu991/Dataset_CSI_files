@@ -137,3 +137,51 @@ I can:
 👉 simulate one real flow end-to-end with your fix
 👉 or review your actual output CSV for correctness
 Just say 👍
+
+# ----------------------------------------------------
+# Ambiguous but usable flow: QM_ONLY_MATCH
+# Include in target using canonical ownership
+# ----------------------------------------------------
+if resolution_status == "QM_ONLY_MATCH":
+    decision.update({
+        "strategy": "direct_route_to_consumer_qm",
+        "decision_family": "ambiguous_but_usable_flow",
+        "exclude_from_target": False,
+        "manual_review": True,   # keep True if you want stricter review
+        "human_override_recommended": True,
+        "target_route_type": "cross_qm_canonical",
+        "target_topology_pattern": "producer_local_remote_xmit_channel_consumer_local",
+        "target_validity": "usable_with_qm_level_evidence",
+        "target_producer_qm": canonical_producer_qm,
+        "target_consumer_qm": canonical_consumer_qm,
+        "confidence": "MEDIUM",
+    })
+    decision["reasons"].append("qm_level_match_valid_without_queue_match")
+    decision["reasons"].append("consumer_present_on_routing_qm")
+    if ambiguity_type:
+        decision["decision_notes"].append(f"ambiguity_type={ambiguity_type}")
+    decision["decision_notes"].append(
+        "Included in target because QM-level linkage is valid even though queue-level mapping is weak."
+    )
+    decisions[flow_id] = decision
+    continue
+
+
+# ----------------------------------------------------
+# Still exclude these unless expert resolves them
+# ----------------------------------------------------
+if resolution_status in {"QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}:
+    decision.update({
+        "strategy": "manual_review_before_target",
+        "decision_family": "ambiguous_flow",
+        "exclude_from_target": True,
+        "manual_review": True,
+        "human_override_recommended": True,
+        "target_validity": "not_target_ready",
+        "confidence": "LOW",
+    })
+    decision["reasons"].append("ambiguous_flow")
+    if ambiguity_type:
+        decision["decision_notes"].append(f"ambiguity_type={ambiguity_type}")
+    decisions[flow_id] = decision
+    continue
