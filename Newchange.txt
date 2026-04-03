@@ -185,3 +185,19 @@ if resolution_status in {"QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}:
         decision["decision_notes"].append(f"ambiguity_type={ambiguity_type}")
     decisions[flow_id] = decision
     continue
+
+if resolution_status in {"QM_ONLY_MATCH", "QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}:
+    decision.update({
+        "strategy": "manual_review_before_target",
+        "decision_family": "ambiguous_flow",
+        "exclude_from_target": True,
+        "manual_review": True,
+        "human_override_recommended": True,
+        "target_validity": "not_target_ready",
+        "confidence": "LOW",
+    })
+    decision["reasons"].append("ambiguous_flow")
+    if ambiguity_type:
+        decision["decision_notes"].append(f"ambiguity_type={ambiguity_type}")
+    decisions[flow_id] = decision
+    continue
