@@ -1,0 +1,216 @@
+Understood. I’ll keep this minimal and only apply the two required fixes:
+Extractor: use full-dataset local-QM evidence so 8A -> OK becomes QM_ONLY_MATCH instead of false orphan
+Optimizer: allow QM_ONLY_MATCH into target output
+Below is the merged script patch to replace in your current code.
+1) Extractor: minimal merged version
+A. Add this block inside extract_flows_refined_submission_grade(df)
+Place it after:
+Python
+df["q_type_norm"] = df["q_type"].apply(normalize_q_type)
+    df = df.reset_index().rename(columns={"index": "record_id"})
+Add:
+Python
+# --------------------------------------------------------
+    # GLOBAL APP -> LOCAL QM MAP
+    # Use full dataset evidence, not only current producer/consumer row group
+    # --------------------------------------------------------
+    app_local_qm_map: Dict[str, set] = {}
+
+    local_df_for_map = df[df["q_type_norm"].str.contains("Local", case=False, na=False)].copy()
+    for _, row in local_df_for_map.iterrows():
+        app_id = normalize_text(row.get("app_id", ""))
+        qm_name = normalize_text(row.get("queue_manager_name", ""))
+        if app_id and qm_name:
+            app_local_qm_map.setdefault(app_id, set()).add(qm_name)
+B. Replace this existing block:
+Python
+candidate_consumer_qms = sorted(set(as_list(consumer_home_qm)))
+        candidate_consumer_queues = sorted(set(consumer_local_queues))
+
+        routing_target_qms = set(as_list(routing_target_qm))
+        consumer_home_qms = set(as_list(consumer_home_qm))
+
+        exact_qm_match = bool(routing_target_qms & consumer_home_qms)
+        exact_queue_match = bool(set(remote_target_queue_names) & set(consumer_local_queues))
+with this:
+Python
+# --------------------------------------------------------
+        # CONSUMER QM CANDIDATES
+        # Use both current flow group and full-dataset local-QM evidence
+        # --------------------------------------------------------
+        global_consumer_local_qms = sorted(app_local_qm_map.get(consumer_app, set()))
+
+        candidate_consumer_qms = sorted(
+            set(as_list(consumer_home_qm)) |
+            set(global_consumer_local_qms)
+        )
+        candidate_consumer_queues = sorted(set(consumer_local_queues))
+
+        routing_target_qms = set(as_list(routing_target_qm))
+        consumer_home_qms = set(as_list(consumer_home_qm))
+        consumer_effective_home_qms = set(candidate_consumer_qms)
+
+        # QM-level validity can come from wider dataset, not just current flow group
+        exact_qm_match = bool(routing_target_qms & consumer_effective_home_qms)
+        exact_queue_match = bool(set(remote_target_queue_names) & set(consumer_local_queues))
+C. Replace this health block:
+Python
+producer_qms = set(as_list(producer_home_qm))
+        consumer_qms = set(as_list(consumer_home_qm))
+        routing_qms = set(as_list(routing_target_qm))
+
+        is_as_is_broken = False
+        if has_remote:
+            if not routing_qms:
+                is_as_is_broken = True
+            elif not (routing_qms & consumer_qms):
+                if not any(qm in flatten_qm_path(qm_path) for qm in consumer_qms):
+                    is_as_is_broken = True
+with this:
+Python
+producer_qms = set(as_list(producer_home_qm))
+        consumer_qms = set(candidate_consumer_qms)  # use effective consumer QM set
+        routing_qms = set(as_list(routing_target_qm))
+
+        is_as_is_broken = False
+        if has_remote:
+            if not routing_qms:
+                is_as_is_broken = True
+            elif not (routing_qms & consumer_qms):
+                # allow indirect presence if qm_path already includes one of the consumer QMs
+                if not any(qm in flatten_qm_path(qm_path) for qm in consumer_qms):
+                    is_as_is_broken = True
+2) Optimizer: minimal merged version
+Replace this block in build_optimization_decisions(...):
+Python
+if resolution_status in {"QM_ONLY_MATCH", "QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}:
+    decision.update({
+        "strategy": "manual_review_before_target",
+        "decision_family": "ambiguous_flow",
+        "exclude_from_target": True,
+        "manual_review": True,
+        "human_override_recommended": True,
+        "target_validity": "not_target_ready",
+        "confidence": "LOW",
+    })
+    decision["reasons"].append("ambiguous_flow")
+    if ambiguity_type:
+        decision["decision_notes"].append(f"ambiguity_type={ambiguity_type}")
+    decisions[flow_id] = decision
+    continue
+with this:
+Python
+# ----------------------------------------------------
+# QM_ONLY_MATCH = ambiguous but usable
+# Include in target using canonical ownership
+# ----------------------------------------------------
+if resolution_status == "QM_ONLY_MATCH":
+    decision.update({
+        "strategy": "direct_route_to_consumer_qm",
+        "decision_family": "ambiguous_but_usable_flow",
+        "exclude_from_target": False,
+        "manual_review": False,   # do not block pipeline
+        "human_override_recommended": True,
+        "target_route_type": "cross_qm_canonical",
+        "target_topology_pattern": "producer_local_remote_xmit_channel_consumer_local",
+        "target_validity": "target_ready",
+        "target_producer_qm": canonical_producer_qm,
+        "target_consumer_qm": canonical_consumer_qm,
+        "confidence": "MEDIUM",
+    })
+    decision["reasons"].append("qm_level_match_valid_without_queue_match")
+    decision["reasons"].append("consumer_present_on_routing_qm_elsewhere_in_dataset")
+    if ambiguity_type:
+        decision["decision_notes"].append(f"ambiguity_type={ambiguity_type}")
+    decision["decision_notes"].append(
+        "Included in target because QM-level linkage is valid even though queue-level mapping is weak."
+    )
+    decisions[flow_id] = decision
+    continue
+
+
+# ----------------------------------------------------
+# Still exclude these unless expert resolves them
+# ----------------------------------------------------
+if resolution_status in {"QUEUE_ONLY_MATCH", "MULTI_CANDIDATE"}:
+    decision.update({
+        "strategy": "manual_review_before_target",
+        "decision_family": "ambiguous_flow",
+        "exclude_from_target": True,
+        "manual_review": True,
+        "human_override_recommended": True,
+        "target_validity": "not_target_ready",
+        "confidence": "LOW",
+    })
+    decision["reasons"].append("ambiguous_flow")
+    if ambiguity_type:
+        decision["decision_notes"].append(f"ambiguity_type={ambiguity_type}")
+    decisions[flow_id] = decision
+    continue
+3) YAML: minimal update
+Use this exact config.yaml:
+YAML
+input_file: data/input/sample_input.csv
+output_dir: artifacts/output/
+
+expert_decisions: {}
+That is enough.
+Do not add policy logic now if your code is already running. It is unnecessary risk for tomorrow.
+4) Strict expected behavior after this merge
+For the 8A -> OK case:
+if producer remote target QM is WQ26
+and consumer OK is local on WQ26 elsewhere in the dataset
+Then:
+extractor
+Python
+resolution_status = "QM_ONLY_MATCH"
+optimizer
+Python
+exclude_from_target = False
+target_validity = "target_ready"
+manual_review = False
+output
+Flow will go into:
+target_flows
+validated_target_flows if structure is valid
+target_topology.csv
+target_topology_input_schema.csv
+target owner QMs
+It should use:
+QM_8A
+QM_OK
+Not:
+WL6EX2C
+WQ26
+5) One final check before delivery
+Run this after final_decisions is built:
+Python
+for flow_id, decision in final_decisions.items():
+    if flow_id == "8A->OK":
+        print(
+            flow_id,
+            decision.get("exclude_from_target"),
+            decision.get("target_validity"),
+            decision.get("manual_review"),
+            decision.get("target_producer_qm"),
+            decision.get("target_consumer_qm"),
+        )
+Expected:
+Python
+8A->OK False target_ready False QM_8A QM_OK
+And after target_flows is built:
+Python
+print("8A->OK" in target_flows)
+Expected:
+Python
+True
+Final strict recommendation
+Do only these replacements.
+Do not touch:
+target builder
+validation
+export
+comparison
+reports
+These fixes are enough for the issue you found.
+If you want, paste just your optimizer ambiguity block and candidate_consumer_qms block after editing, and I’ll do one final sanity check.
