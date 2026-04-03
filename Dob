@@ -1,0 +1,90 @@
+Perfect — this is the most important section of your submission. If you get this right, everything else becomes easier to justify.
+Here’s a clean, submission-ready version you can directly put in GitHub.
+🧾 Problem Statement
+🔹 Overview
+Enterprise messaging environments built on IBM MQ have evolved organically over time, resulting in highly complex, tightly coupled, and difficult-to-manage topologies. These environments lack standardization, making them challenging to operate, secure, and modernize.
+This project addresses the problem of transforming such legacy MQ topologies into simplified, standardized, and automation-ready target architectures using intelligent analysis and rule-based optimization.
+🔹 Core Problem
+The current (AS-IS) MQ environments exhibit:
+Uncontrolled growth of queue managers (QM sprawl)
+Complex and non-deterministic routing paths
+Applications connected to multiple QMs
+Excessive point-to-point channels with unclear ownership
+Redundant and unused MQ objects
+Inconsistent design patterns across environments
+Limited visibility into producer–consumer relationships
+These issues lead to:
+Increased operational risk
+Difficulty in troubleshooting and debugging
+High manual effort for onboarding and changes
+Lack of scalability and standardization
+Challenges in enforcing security and compliance
+🔹 Key Pain Points
+1. Queue Manager Sprawl
+Applications are often connected to multiple queue managers, violating ownership clarity and making dependency tracking difficult.
+2. Complex Routing Paths
+Messages flow through multiple intermediate queue managers (often unnecessarily), leading to:
+Increased latency
+Higher failure points
+Difficult traceability
+3. Ambiguous Ownership and Relationships
+Multiple candidate queue managers for a single application
+Inconsistent queue naming and alias usage
+Lack of clear producer–consumer mapping
+4. Redundant and Inefficient Topologies
+Routing-only queue managers acting as pass-through nodes
+Duplicate or unused queues
+Excessive fan-in / fan-out patterns
+5. Lack of Standardization
+Each part of the system evolves differently, resulting in:
+No consistent architecture
+Difficult automation
+High onboarding effort
+6. Data Quality Issues
+The input data reflects real-world inconsistencies:
+Missing producer/consumer identities
+Broken routing paths
+Orphan flows
+Ambiguous mappings
+🔹 Opportunity
+This problem presents an opportunity to:
+Introduce standardized MQ architecture patterns
+Enforce one queue manager per application
+Enable deterministic and simplified routing
+Reduce topology complexity significantly
+Build an automation-first provisioning model
+Detect and handle data quality and ambiguity systematically
+Support human-in-the-loop decision making for edge cases
+🔹 Objective of the Solution
+The goal is to:
+Analyze the AS-IS MQ topology from a CSV dataset and generate a simplified, constraint-compliant, and production-ready TARGET topology, along with clear reasoning and measurable complexity reduction.
+🔹 Constraints to Enforce
+The target architecture must strictly follow:
+Exactly one Queue Manager per application
+Applications connect only to their own QM
+Producers write to local queues
+Remote queues are used for cross-QM communication
+Transmission queues (XMIT) and channels handle inter-QM routing
+Consumers read from local queues only
+Routing must be deterministic and explainable
+🔹 What This Solution Does
+This solution:
+Parses and analyzes raw MQ topology data
+Identifies producer–consumer flows
+Detects anomalies and ambiguities
+Builds AS-IS complexity metrics
+Applies intelligent optimization decisions
+Supports optional expert overrides
+Generates a TARGET topology in the same schema
+Produces validation, comparison, and explanation reports
+🔹 Expected Outcome
+A clean, simplified MQ topology
+Reduced number of routing hops and dependencies
+Elimination of redundant MQ components
+Clear ownership of queue managers
+Improved scalability and maintainability
+A fully automation-ready architecture
+💡 One-line Summary (optional, nice touch)
+“This solution transforms complex, organically grown MQ environments into simplified, standardized, and automation-ready architectures using intelligent analysis, constraint enforcement, and explainable decision-making.”
+If you want next:
+👉 I can help you write the “Solution Approach / Architecture” section (this is where you’ll really stand out).
