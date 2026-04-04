@@ -1,3 +1,15 @@
-solution transforms a complex AS-IS IBM MQ topology into a simplified, standardized, and automation-ready target architecture through a structured, end-to-end pipeline. It starts by extracting producer–consumer flows from raw data, identifies ambiguity and topology issues, analyzes routing complexity, and then applies constraint-driven optimization to generate a clean target state with deterministic routing and clear ownership.
-
-What makes this solution unique is that it goes beyond simple data transformation or visualization—it behaves like an intelligent architecture assistant. It understands topology health, detects ambiguity, and makes explainable decisions while still allowing optional human input for edge cases. This combination of automation, reasoning, and explainability ensures that the final target design is both practical and enterprise-ready.
+Layer | Technology
+----------------------------------------------------
+Programming Language | Python 3.10+
+Data Processing | pandas
+Data Modeling / Logic | Python (custom logic, dictionaries, sets)
+Graph Processing (optional) | NetworkX
+File Handling | CSV (pandas), JSON
+Configuration | YAML (PyYAML)
+Execution Environment | Local Machine / Jupyter Notebook / CLI
+Version Control | Git, GitHub
+Visualization (optional) | matplotlib / Graphviz
+Output Artifacts | CSV, Markdown (.md)
+Documentation | Markdown (GitHub README)
+IDE / Editor | VS Code / PyCharm
+Dependency Management | pip / virtualenv
