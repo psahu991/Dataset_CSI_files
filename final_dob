@@ -1,15 +1,1 @@
-Layer | Technology
-----------------------------------------------------
-Programming Language | Python 3.10+
-Data Processing | pandas
-Data Modeling / Logic | Python (custom logic, dictionaries, sets)
-Graph Processing (optional) | NetworkX
-File Handling | CSV (pandas), JSON
-Configuration | YAML (PyYAML)
-Execution Environment | Local Machine / Jupyter Notebook / CLI
-Version Control | Git, GitHub
-Visualization (optional) | matplotlib / Graphviz
-Output Artifacts | CSV, Markdown (.md)
-Documentation | Markdown (GitHub README)
-IDE / Editor | VS Code / PyCharm
-Dependency Management | pip / virtualenv
+A data-driven engine that transforms complex IBM MQ topologies into a simplified, standardized, and constraint-compliant target architecture using graph-based analysis and explainable optimization logic.
