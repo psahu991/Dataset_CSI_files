@@ -1,52 +1,12 @@
-<mxfile host="app.diagrams.net">
-  <diagram name="MQ Architecture">
-    <mxGraphModel dx="1000" dy="600" grid="1" gridSize="10">
-      <root>
-        <mxCell id="0"/>
-        <mxCell id="1" parent="0"/>
-
-        <mxCell id="input" value="Input Layer&#xa;(CSV MQ Dataset)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;" vertex="1" parent="1">
-          <mxGeometry x="300" y="20" width="200" height="60" as="geometry"/>
-        </mxCell>
-
-        <mxCell id="extract" value="Flow Extraction&#xa;(Producer → Consumer)" style="rounded=1;fillColor=#d5e8d4;" vertex="1" parent="1">
-          <mxGeometry x="300" y="100" width="200" height="60" as="geometry"/>
-        </mxCell>
-
-        <mxCell id="analysis" value="Analysis &amp; Classification&#xa;(QM / Queue Match)" style="rounded=1;fillColor=#fff2cc;" vertex="1" parent="1">
-          <mxGeometry x="300" y="180" width="200" height="60" as="geometry"/>
-        </mxCell>
-
-        <mxCell id="decision" value="Optimization Decision&#xa;(Auto + Expert)" style="rounded=1;fillColor=#f8cecc;" vertex="1" parent="1">
-          <mxGeometry x="300" y="260" width="200" height="60" as="geometry"/>
-        </mxCell>
-
-        <mxCell id="target" value="Target Topology Builder&#xa;(Canonical MQ Design)" style="rounded=1;fillColor=#e1d5e7;" vertex="1" parent="1">
-          <mxGeometry x="300" y="340" width="200" height="60" as="geometry"/>
-        </mxCell>
-
-        <mxCell id="validate" value="Validation Engine&#xa;(Constraints Check)" style="rounded=1;fillColor=#d5e8d4;" vertex="1" parent="1">
-          <mxGeometry x="300" y="420" width="200" height="60" as="geometry"/>
-        </mxCell>
-
-        <mxCell id="report" value="Comparison &amp; Reporting&#xa;(AS-IS vs TARGET)" style="rounded=1;fillColor=#fff2cc;" vertex="1" parent="1">
-          <mxGeometry x="300" y="500" width="200" height="60" as="geometry"/>
-        </mxCell>
-
-        <mxCell id="output" value="Output Layer&#xa;(CSV + Reports)" style="rounded=1;fillColor=#dae8fc;" vertex="1" parent="1">
-          <mxGeometry x="300" y="580" width="200" height="60" as="geometry"/>
-        </mxCell>
-
-        <!-- Arrows -->
-        <mxCell edge="1" parent="1" source="input" target="extract"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell edge="1" parent="1" source="extract" target="analysis"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell edge="1" parent="1" source="analysis" target="decision"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell edge="1" parent="1" source="decision" target="target"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell edge="1" parent="1" source="target" target="validate"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell edge="1" parent="1" source="validate" target="report"><mxGeometry relative="1" as="geometry"/></mxCell>
-        <mxCell edge="1" parent="1" source="report" target="output"><mxGeometry relative="1" as="geometry"/></mxCell>
-
-      </root>
-    </mxGraphModel>
-  </diagram>
-</mxfile>
+Here’s a short, crisp version (perfect for GitHub or slides):
+🧠 Key Design Decisions (Short)
+Dataset-driven: Uses input data as the single source of truth, no assumptions
+Global reasoning: Validates flows using cross-dataset topology, not just row-level data
+QM-first matching: Prioritizes Queue Manager alignment over queue-name matching
+Clear ambiguity handling: Classifies flows (e.g., QM_ONLY_MATCH, MULTI_CANDIDATE) for controlled decisions
+Canonical target design: Enforces one QM per app with standardized routing patterns
+Safe automation: Includes valid flows, excludes uncertain ones, avoids wrong assumptions
+Human-in-loop: Flags ambiguous flows as needs_review instead of rejecting them
+Explainable decisions: Every transformation is traceable with reasons and confidence
+If you want even shorter (for slide):
+👉 “Data-driven, topology-aware, QM-first, explainable, and constraint-compliant MQ transformation.”
