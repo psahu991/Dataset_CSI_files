@@ -1,1 +1,99 @@
-A data-driven engine that transforms complex IBM MQ topologies into a simplified, standardized, and constraint-compliant target architecture using graph-based analysis and explainable optimization logic.
+Here’s a clean, hackathon-ready “System Overview” section you can paste directly into GitHub:
+🏗️ System Overview
+The solution is a data-driven MQ topology transformation engine that ingests complex AS-IS configurations and produces a simplified, standardized, and constraint-compliant TARGET architecture.
+🔧 High-Level Architecture
+The system is structured as a pipeline of modular components, where each stage processes and enriches the data before passing it to the next stage.
+⚙️ Major Components
+1. 📥 Input Layer
+Reads MQ configuration data from CSV files
+Validates schema and normalizes fields
+Treats the dataset as the single source of truth
+2. 🔍 Flow Extraction Engine
+Groups records into producer → consumer flows
+Identifies:
+Producer/Consumer apps
+Home Queue Managers
+Routing targets
+Queue types (Local, Remote, Alias)
+Builds a structured flow object model
+3. 🧠 Analysis & Classification Engine
+Evaluates each flow using:
+QM-level matching
+Queue-level matching
+Cross-dataset evidence
+Classifies flows into:
+INDIRECT_COMPLETE
+QM_ONLY_MATCH
+QUEUE_ONLY_MATCH
+MULTI_CANDIDATE
+ORPHAN
+Performs health checks and ambiguity detection
+4. ⚙️ Optimization Decision Engine
+Applies rule-based logic to determine:
+Whether a flow should be included in target
+Required transformation strategy
+Supports:
+Automatic decisions
+Optional expert overrides
+Marks flows as:
+approved
+needs_review
+excluded
+5. 🏗️ Target Topology Builder
+Converts valid flows into canonical MQ design
+Enforces constraints:
+One QM per application
+Producer writes locally
+Consumer reads locally
+Cross-QM routing via remote/XMIT/channels
+Generates standardized MQ objects:
+Local queues
+Remote queues
+Transmission queues
+Channels
+6. ✅ Validation Engine
+Verifies target topology correctness:
+Constraint compliance
+No legacy QM leakage
+Structural integrity
+Flags violations before output generation
+7. 📊 Comparison & Reporting Layer
+Compares AS-IS vs TARGET:
+Complexity reduction
+Routing simplification
+Generates:
+Explanation report
+Data quality report
+Transformation summary
+8. 📤 Output Layer
+Produces automation-ready artifacts:
+target_topology.csv
+target_topology_input_schema.csv
+.md reports for analysis and documentation
+🔄 End-to-End Flow
+Plain text
+Input CSV
+   ↓
+Flow Extraction
+   ↓
+Analysis & Classification
+   ↓
+Optimization Decisions (Auto + Expert)
+   ↓
+Target Topology Builder
+   ↓
+Validation
+   ↓
+Comparison & Reports
+   ↓
+Final Output (CSV + Documentation)
+🎯 Key Design Principles
+Data-driven: No assumptions beyond input dataset
+Explainable: Every decision is traceable and justified
+Constraint-first: Target design strictly enforces MQ rules
+Modular: Each component is independently testable
+Extensible: Supports future AI-driven optimization
+🚀 Summary
+The system transforms fragmented MQ configurations into a clean, deterministic, and scalable architecture by combining structured data extraction, intelligent reasoning, and rule-based optimization.
+If you want, I can next generate: 👉 a simple architecture diagram (for your README or slides)
+👉 or a one-slide version of this for presentation
