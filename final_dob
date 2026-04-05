@@ -232,3 +232,126 @@ If you want, I can generate the exact contents for:
 demo_steps.md
 expert_decisions.sample.json
 config.yaml in final paste-ready form.
+
+
++*+++++++---
+Here’s a clear, beginner-friendly explanation of each field in the expert override JSON. You can paste this directly into your README.
+🧾 Expert Override JSON – Field Explanation
+📌 Structure
+JSON
+{
+  "FLOW_ID": {
+    "target_producer_qm": "...",
+    "target_consumer_qm": "...",
+    "manual_review": false,
+    "exclude_from_target": false,
+    "reason": "..."
+  }
+}
+🔑 Top-Level Key
+FLOW_ID
+Plain text
+Format: <producer_app>-><consumer_app>
+Example
+Plain text
+8A->OK
+Meaning
+Represents one producer → consumer flow
+Must match exactly what you see in:
+explanation_report.csv
+data_quality_issues_report.csv
+🧠 Fields Inside Each Flow
+1. target_producer_qm
+JSON
+"target_producer_qm": "QM_8A"
+Meaning
+The final Queue Manager assigned to the producer application
+Must follow canonical rule:
+Plain text
+QM_<PRODUCER_APP>
+Why it matters
+Enforces one QM per application
+Overrides incorrect or ambiguous AS-IS mapping
+2. target_consumer_qm
+JSON
+"target_consumer_qm": "QM_OK"
+Meaning
+The final Queue Manager assigned to the consumer application
+Must follow:
+Plain text
+QM_<CONSUMER_APP>
+Why it matters
+Ensures consumer reads from its own local QM
+Removes dependency on legacy routing QMs (like WQ26)
+3. manual_review
+JSON
+"manual_review": false
+Meaning
+Indicates whether the flow still needs human validation
+Values
+Value
+Meaning
+true
+Still needs review
+false
+Approved by expert
+Important
+If set to false, flow becomes:
+Plain text
+final_status = approved
+4. exclude_from_target
+JSON
+"exclude_from_target": false
+Meaning
+Controls whether the flow should be included in the target topology
+Values
+Value
+Meaning
+false
+Include in target
+true
+Exclude completely
+Use cases
+true → invalid / duplicate / irrelevant flow
+false → valid business flow
+5. reason
+JSON
+"reason": "QM-level linkage confirmed from full dataset"
+Meaning
+Human-readable explanation of the decision
+Why it matters
+Improves explainability
+Helps judges understand:
+why override was needed
+what logic was applied
+🎯 Example Explained
+JSON
+{
+  "8A->OK": {
+    "target_producer_qm": "QM_8A",
+    "target_consumer_qm": "QM_OK",
+    "manual_review": false,
+    "exclude_from_target": false,
+    "reason": "QM-level linkage confirmed from full dataset; canonical ownership applied."
+  }
+}
+Interpretation
+Flow: 8A → OK
+Include in target ✔
+Assign:
+Producer QM → QM_8A
+Consumer QM → QM_OK
+No further review needed ✔
+Decision is justified ✔
+⚠️ What NOT to do
+❌ Do not use legacy QMs:
+JSON
+"WQ26"   // ❌ wrong
+✔ Always use canonical:
+JSON
+"QM_8A"
+"QM_OK"
+🧠 One-Line Summary
+The expert JSON allows manual override of automated decisions by explicitly defining target QMs, inclusion/exclusion, and approval status for each flow.
+If you want, I can also generate: 👉 a visual example (before vs after override)
+👉 or a demo walkthrough script for presentation
