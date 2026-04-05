@@ -1,12 +1,234 @@
-Here’s a short, crisp version (perfect for GitHub or slides):
-🧠 Key Design Decisions (Short)
-Dataset-driven: Uses input data as the single source of truth, no assumptions
-Global reasoning: Validates flows using cross-dataset topology, not just row-level data
-QM-first matching: Prioritizes Queue Manager alignment over queue-name matching
-Clear ambiguity handling: Classifies flows (e.g., QM_ONLY_MATCH, MULTI_CANDIDATE) for controlled decisions
-Canonical target design: Enforces one QM per app with standardized routing patterns
-Safe automation: Includes valid flows, excludes uncertain ones, avoids wrong assumptions
-Human-in-loop: Flags ambiguous flows as needs_review instead of rejecting them
-Explainable decisions: Every transformation is traceable with reasons and confidence
-If you want even shorter (for slide):
-👉 “Data-driven, topology-aware, QM-first, explainable, and constraint-compliant MQ transformation.”
+They won’t know unless you expose it clearly in the outputs and docs.
+So for a new person, you need to give them 3 things:
+1. Where flow IDs come from
+Explain that flow_id is generated as:
+Plain text
+<producer_app>-><consumer_app>
+Example
+Plain text
+8A->OK
+OPGK->KSQP
+Add this in README under Expert Override Format.
+2. A file where they can see all flow IDs
+The best way is to include flow IDs in an output artifact they already open.
+Recommended
+Make sure these files contain flow_id as the first column:
+explanation_report.csv
+data_quality_issues_report.csv
+That way a new user can simply open either file and see:
+flow_id
+status
+reason
+whether it needs review
+Best practical instruction for judges
+Tell them:
+To create an expert override, first open explanation_report.csv or data_quality_issues_report.csv and copy the required flow_id.
+That is enough.
+3. A sample JSON structure
+You must include a sample file and explain each field.
+Example file: config/expert_decisions.sample.json
+JSON
+{
+  "8A->OK": {
+    "target_producer_qm": "QM_8A",
+    "target_consumer_qm": "QM_OK",
+    "manual_review": false,
+    "exclude_from_target": false,
+    "reason": "QM-level linkage confirmed from full dataset; canonical ownership approved."
+  }
+}
+Best way to make this easy for a new person
+Add one small section in README like this:
+How to create an expert override
+Run the pipeline once
+Open artifacts/output/explanation_report.csv or artifacts/output/data_quality_issues_report.csv
+Find a flow marked needs_review or excluded
+Copy its flow_id
+Add an entry in config/expert_decisions.sample.json using that flow_id as the key
+Re-run the pipeline
+Flow ID format
+A flow ID is generated as:
+Plain text
+<producer_app>-><consumer_app>
+Example:
+Plain text
+8A->OK
+Example override
+JSON
+{
+  "8A->OK": {
+    "target_producer_qm": "QM_8A",
+    "target_consumer_qm": "QM_OK",
+    "manual_review": false,
+    "exclude_from_target": false,
+    "reason": "Expert-confirmed canonical target ownership."
+  }
+}
+Even better: create a dedicated review file
+If you want it to be very user-friendly, generate one more optional file:
+Plain text
+artifacts/output/review_candidates.csv
+with columns like:
+flow_id
+resolution_status
+final_status
+manual_review
+exclude_from_target
+reason_summary
+Then judges instantly know:
+which flows are review candidates
+which flow IDs to use
+But this is optional
+If you already have explanation_report.csv and data_quality_issues_report.csv, that is enough.
+Strict recommendation
+For tomorrow, do this minimum:
+In repo
+config/expert_decisions.sample.json
+config/expert_decisions.empty.json
+In README
+Add:
+flow ID format
+where to find flow IDs
+one example override
+In outputs
+Ensure flow_id is visible in:
+explanation_report.csv
+data_quality_issues_report.csv
+Final answer
+A new person will know the flow ID only if you show them where to find it.
+The cleanest approach is:
+flow IDs come from producer_app->consumer_app
+they can find them in explanation_report.csv and data_quality_issues_report.csv
+they use those IDs as keys in the sample expert JSON file
+If you want, I can generate the exact README section and the two sample JSON files in paste-ready form.
+
++++++--+++++++++
+
+They won’t know unless you show them explicitly.
+So yes — for the demo and repo, you should provide a sample expert override JSON/YAML file.
+Strict answer
+If you support human-in-the-loop in the pipeline, but you do not include a sample file and format, then judges will see it as:
+mentioned in documentation
+maybe supported in code
+but not easily usable
+That weakens the demo.
+What you should do
+Add a small folder like:
+Plain text
+config/
+├── config.yaml
+├── expert_decisions.empty.json
+└── expert_decisions.sample.json
+Recommended contents
+expert_decisions.empty.json
+JSON
+{}
+expert_decisions.sample.json
+JSON
+{
+  "8A->OK": {
+    "target_producer_qm": "QM_8A",
+    "target_consumer_qm": "QM_OK",
+    "manual_review": false,
+    "exclude_from_target": false,
+    "reason": "QM-level linkage confirmed from full dataset; canonical ownership approved."
+  }
+}
+This is enough.
+How judges will understand it
+In your README, add a section like this:
+Expert Override Input
+The pipeline supports an optional expert decision file for ambiguous or high-risk flows.
+Example format
+JSON
+{
+  "FLOW_ID": {
+    "target_producer_qm": "QM_APP_A",
+    "target_consumer_qm": "QM_APP_B",
+    "manual_review": false,
+    "exclude_from_target": false,
+    "reason": "Expert-confirmed ownership and routing decision."
+  }
+}
+Notes
+Key = flow_id
+Values override selected automated decisions
+This file is optional; the pipeline runs fully automatically without it
+Best demo structure
+Demo 1: Full automatic run
+Show:
+input CSV
+execute script
+generated files
+explain each file briefly
+Files to explain
+target_topology.csv
+clean target architecture output
+target_topology_input_schema.csv
+same target mapped into original input format
+explanation_report.csv
+why each flow was included, changed, or excluded
+data_quality_issues_report.csv
+broken, orphan, ambiguous, and unknown cases
+complexity_comparison.csv
+AS-IS vs TARGET reduction metrics
+migration_plan.md
+rollout guidance
+regression_testing_plan.md
+how to validate correctness
+insights.md
+key findings and improvements
+Demo 2: Human-in-the-loop run
+Show:
+one ambiguous flow in output
+sample expert JSON file
+rerun pipeline using that file
+show changed output
+Best example
+Use one QM_ONLY_MATCH or MULTI_CANDIDATE flow.
+How to make this easy for judges
+In the repo, include:
+Plain text
+demo/
+├── demo_steps.md
+├── screenshots/
+│   ├── 01_input_file.png
+│   ├── 02_run_command.png
+│   ├── 03_outputs_generated.png
+│   ├── 04_explanation_report.png
+│   ├── 05_expert_override_json.png
+│   └── 06_output_after_override.png
+What to put in demo_steps.md
+You can use this:
+Demo Steps
+Scenario 1: Automated topology transformation
+Open config.yaml
+Confirm input CSV path
+Run python run_pipeline.py
+Review generated outputs in artifacts/output/
+Scenario 2: Expert override for ambiguous flow
+Open config/expert_decisions.sample.json
+Add or update the file path in config
+Re-run the pipeline
+Compare target output and explanation report before and after override
+Important recommendation
+Even if your current code reads expert decisions from YAML, still provide a sample file in the repo.
+Because judges need:
+format
+example
+usability
+Without that, they have to guess.
+Final answer
+Yes — you should absolutely save a sample expert decision file in the repository.
+Otherwise judges won’t know:
+what the JSON structure is
+how to use it
+what fields are supported
+Minimum required
+expert_decisions.empty.json
+expert_decisions.sample.json
+one README section explaining the structure
+If you want, I can generate the exact contents for:
+demo_steps.md
+expert_decisions.sample.json
+config.yaml in final paste-ready form.
