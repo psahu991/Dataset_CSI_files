@@ -1,97 +1,158 @@
-Perfect — this is exactly what will make your demo stand out.
-You should include a “Flow Status Guide” section in your demo so judges instantly understand what each status means.
-Below is a clean, crisp, paste-ready section for your DEMO or README.
-🎯 Flow Status Guide (How to Read the Output)
-Each flow in the system is assigned a final status to indicate its readiness and reliability in the target topology.
-✅ 1. approved
-Meaning
-Fully validated and automatically accepted
-No ambiguity or missing information
-When it happens
-INDIRECT_COMPLETE
-LOCAL_COMPLETE
-Action
-✔ Included in target
-✔ No manual intervention required
-⚠️ 2. needs_review
-Meaning
-Flow is usable but not fully confirmed
-Requires human validation
-When it happens
-QM_ONLY_MATCH
-QUEUE_ONLY_MATCH (if allowed)
-Action
-✔ Included in target
-⚠ Should be reviewed using expert override JSON
-❌ 3. excluded
-Meaning
-Flow is not reliable enough to include in target
-When it happens
-MULTI_CANDIDATE
-ORPHAN
-UNRESOLVED
-Action
-❌ Not included in target topology
-⚠ Can be manually included using expert override
-🧠 Resolution Status vs Final Status
-Resolution Status
-Final Status
-Meaning
-INDIRECT_COMPLETE
-approved
-Fully validated
-LOCAL_COMPLETE
-approved
-Same QM, valid
-QM_ONLY_MATCH
-needs_review
-QM match only
-QUEUE_ONLY_MATCH
-needs_review / excluded
-Weak mapping
-MULTI_CANDIDATE
-excluded
-Multiple possibilities
-ORPHAN
-excluded
-No valid path
-📌 Example
+Here’s a powerful, judge-friendly DEMO document you can paste directly into your repo (demo/demo_steps.md).
+It is structured exactly how judges think: run → see output → understand meaning → see value.
+🎬 Demo: MQ Topology Transformation (End-to-End)
+🎯 Objective
+This demo shows how the system:
+Transforms complex MQ topology into a clean target architecture
+Handles ambiguous real-world data
+Produces explainable and review-ready outputs
+▶️ Step 1: Run the Pipeline
+Bash
+python main.py
+📂 Step 2: Generated Outputs
+All outputs are available in:
 Plain text
-Flow ID: 8A->OK
+artifacts/output/
+🧠 Core Idea of Outputs
+Each output answers a specific question:
+File
+What it answers
+target_topology.csv
+What is the final architecture?
+target_topology_input_schema.csv
+Can this be fed back into MQ systems?
+explanation_report.csv
+Why was each decision made?
+data_quality_issues_report.csv
+What problems exist in AS-IS data?
+complexity_comparison.csv
+How much did we simplify?
+📊 1. Target Topology (target_topology.csv)
+🎯 What it is
+The final, optimized MQ architecture
+🔍 What you will see
+Plain text
+flow_id | target_producer_qm | target_consumer_qm | route_type
+🧠 Meaning
+Every app has exactly one QM
+No legacy QMs (like WQ26) appear here
+Routing is standardized and deterministic
+✅ Example
+Plain text
+8A->OK | QM_8A | QM_OK | cross_qm
+Interpretation
+Producer runs on QM_8A
+Consumer runs on QM_OK
+Clean, canonical routing created
+🔄 2. Input Schema Format (target_topology_input_schema.csv)
+🎯 What it is
+Same target, but converted into original MQ input format
+🧠 Why it matters
+Directly usable for:
+MQ provisioning
+automation scripts
+migration tools
+👉 This is your deployment-ready output
+🧾 3. Explanation Report (explanation_report.csv)
+🎯 Most important file for judges
+🔍 What you will see
+Plain text
+flow_id | resolution_status | final_status | reason | confidence
+🧠 How to read it
+Example
+Plain text
+8A->OK | QM_ONLY_MATCH | needs_review | QM-level match found | MEDIUM
+Interpretation
+QM match exists ✔
+Queue mismatch ❌
+Flow is still valid ✔
+Needs human validation ⚠
+🎯 Why this is powerful
+This file shows:
+✔ Full transparency
+✔ No black-box logic
+✔ Every decision is explainable
+🚨 4. Data Quality Report (data_quality_issues_report.csv)
+🎯 What it is
+List of problematic flows in AS-IS data
+🔍 What you will see
+Plain text
+flow_id | issue_type | description
+🧠 Examples
+ORPHAN
+Plain text
+No valid consumer found
+MULTI_CANDIDATE
+Plain text
+Multiple possible targets
+🎯 Why this matters
+Highlights data inconsistencies
+Shows system handles real enterprise messiness
+📉 5. Complexity Comparison (complexity_comparison.csv)
+🎯 What it is
+Quantifies improvement
+🔍 Example
+Metric
+AS-IS
+TARGET
+Queue Managers
+120
+45
+Routing Paths
+Complex
+Simplified
+🧠 Meaning
+Reduced routing hops
+Reduced MQ objects
+Improved maintainability
+⭐ Key Demo Highlight
+🔁 Real Example: Ambiguous Flow
+Plain text
+Flow: 8A->OK
+AS-IS Situation
+Producer routes to WQ26
+Consumer is found on WQ26 elsewhere in dataset
+Queue mismatch exists
+System Decision
+Plain text
 Resolution Status: QM_ONLY_MATCH
 Final Status: needs_review
-Interpretation
-Consumer exists on routing QM ✔
-Queue mismatch ❌
-Included in target ✔
-Needs expert validation ⚠
-🔄 After Expert Override
+Why this is correct
+Flow is valid at QM level ✔
+Queue mapping unclear ❌
+Included but flagged ⚠
+🧠 Human-in-the-Loop Demo
+Step 1: Identify flow
+From explanation_report.csv:
+Plain text
+8A->OK → needs_review
+Step 2: Add expert override
 JSON
 {
   "8A->OK": {
+    "target_producer_qm": "QM_8A",
+    "target_consumer_qm": "QM_OK",
     "manual_review": false,
-    "exclude_from_target": false
+    "exclude_from_target": false,
+    "reason": "Expert validated QM-level linkage"
   }
 }
-Result
+Step 3: Re-run pipeline
+Bash
+python main.py
+Step 4: Result
 Plain text
-Final Status → approved
-🎯 Why This Matters
-This classification ensures:
-✔ Correct flows are not wrongly excluded
-✔ Ambiguous flows are not blindly accepted
-✔ Human validation is supported where needed
-✔ Full transparency for every decision
-🚀 One-Line Summary
-Flows are classified as approved, needs_review, or excluded to balance automation accuracy with controlled human validation.
-💡 Pro Tip (for demo)
-When presenting:
-👉 Show one flow moving like this:
-Plain text
-QM_ONLY_MATCH → needs_review → (after JSON) → approved
-That single example will clearly demonstrate:
-automation
-ambiguity handling
-human-in-the-loop
-If you want, I can also give: 👉 a visual slide version (very powerful for judging)
-👉 or a script you can speak during demo in 60 seconds
+Final Status: approved
+🎯 What This Demonstrates
+✔ Intelligent automation
+✔ Controlled ambiguity handling
+✔ Human override capability
+✔ Fully explainable system
+🚀 Final Takeaway
+This system not only transforms MQ topology but also explains every decision, handles ambiguity intelligently, and enables safe human validation.
+🎤 30-Second Demo Script (Optional)
+“We run the pipeline on raw MQ data, which generates a clean target topology along with detailed explanation and quality reports.
+Flows like 8A→OK are intelligently included even when partially ambiguous, and flagged for review.
+We can then apply expert overrides via JSON and re-run the system to finalize decisions — ensuring both automation and control.”
+If you want, I can next: 👉 create slide content (PPT-ready)
+👉 or highlight exactly which screenshots to capture for demo
