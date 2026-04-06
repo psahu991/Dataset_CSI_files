@@ -1,357 +1,97 @@
-They won’t know unless you expose it clearly in the outputs and docs.
-So for a new person, you need to give them 3 things:
-1. Where flow IDs come from
-Explain that flow_id is generated as:
-Plain text
-<producer_app>-><consumer_app>
-Example
-Plain text
-8A->OK
-OPGK->KSQP
-Add this in README under Expert Override Format.
-2. A file where they can see all flow IDs
-The best way is to include flow IDs in an output artifact they already open.
-Recommended
-Make sure these files contain flow_id as the first column:
-explanation_report.csv
-data_quality_issues_report.csv
-That way a new user can simply open either file and see:
-flow_id
-status
-reason
-whether it needs review
-Best practical instruction for judges
-Tell them:
-To create an expert override, first open explanation_report.csv or data_quality_issues_report.csv and copy the required flow_id.
-That is enough.
-3. A sample JSON structure
-You must include a sample file and explain each field.
-Example file: config/expert_decisions.sample.json
-JSON
-{
-  "8A->OK": {
-    "target_producer_qm": "QM_8A",
-    "target_consumer_qm": "QM_OK",
-    "manual_review": false,
-    "exclude_from_target": false,
-    "reason": "QM-level linkage confirmed from full dataset; canonical ownership approved."
-  }
-}
-Best way to make this easy for a new person
-Add one small section in README like this:
-How to create an expert override
-Run the pipeline once
-Open artifacts/output/explanation_report.csv or artifacts/output/data_quality_issues_report.csv
-Find a flow marked needs_review or excluded
-Copy its flow_id
-Add an entry in config/expert_decisions.sample.json using that flow_id as the key
-Re-run the pipeline
-Flow ID format
-A flow ID is generated as:
-Plain text
-<producer_app>-><consumer_app>
-Example:
-Plain text
-8A->OK
-Example override
-JSON
-{
-  "8A->OK": {
-    "target_producer_qm": "QM_8A",
-    "target_consumer_qm": "QM_OK",
-    "manual_review": false,
-    "exclude_from_target": false,
-    "reason": "Expert-confirmed canonical target ownership."
-  }
-}
-Even better: create a dedicated review file
-If you want it to be very user-friendly, generate one more optional file:
-Plain text
-artifacts/output/review_candidates.csv
-with columns like:
-flow_id
-resolution_status
-final_status
-manual_review
-exclude_from_target
-reason_summary
-Then judges instantly know:
-which flows are review candidates
-which flow IDs to use
-But this is optional
-If you already have explanation_report.csv and data_quality_issues_report.csv, that is enough.
-Strict recommendation
-For tomorrow, do this minimum:
-In repo
-config/expert_decisions.sample.json
-config/expert_decisions.empty.json
-In README
-Add:
-flow ID format
-where to find flow IDs
-one example override
-In outputs
-Ensure flow_id is visible in:
-explanation_report.csv
-data_quality_issues_report.csv
-Final answer
-A new person will know the flow ID only if you show them where to find it.
-The cleanest approach is:
-flow IDs come from producer_app->consumer_app
-they can find them in explanation_report.csv and data_quality_issues_report.csv
-they use those IDs as keys in the sample expert JSON file
-If you want, I can generate the exact README section and the two sample JSON files in paste-ready form.
-
-+++++--+++++++++
-
-They won’t know unless you show them explicitly.
-So yes — for the demo and repo, you should provide a sample expert override JSON/YAML file.
-Strict answer
-If you support human-in-the-loop in the pipeline, but you do not include a sample file and format, then judges will see it as:
-mentioned in documentation
-maybe supported in code
-but not easily usable
-That weakens the demo.
-What you should do
-Add a small folder like:
-Plain text
-config/
-├── config.yaml
-├── expert_decisions.empty.json
-└── expert_decisions.sample.json
-Recommended contents
-expert_decisions.empty.json
-JSON
-{}
-expert_decisions.sample.json
-JSON
-{
-  "8A->OK": {
-    "target_producer_qm": "QM_8A",
-    "target_consumer_qm": "QM_OK",
-    "manual_review": false,
-    "exclude_from_target": false,
-    "reason": "QM-level linkage confirmed from full dataset; canonical ownership approved."
-  }
-}
-This is enough.
-How judges will understand it
-In your README, add a section like this:
-Expert Override Input
-The pipeline supports an optional expert decision file for ambiguous or high-risk flows.
-Example format
-JSON
-{
-  "FLOW_ID": {
-    "target_producer_qm": "QM_APP_A",
-    "target_consumer_qm": "QM_APP_B",
-    "manual_review": false,
-    "exclude_from_target": false,
-    "reason": "Expert-confirmed ownership and routing decision."
-  }
-}
-Notes
-Key = flow_id
-Values override selected automated decisions
-This file is optional; the pipeline runs fully automatically without it
-Best demo structure
-Demo 1: Full automatic run
-Show:
-input CSV
-execute script
-generated files
-explain each file briefly
-Files to explain
-target_topology.csv
-clean target architecture output
-target_topology_input_schema.csv
-same target mapped into original input format
-explanation_report.csv
-why each flow was included, changed, or excluded
-data_quality_issues_report.csv
-broken, orphan, ambiguous, and unknown cases
-complexity_comparison.csv
-AS-IS vs TARGET reduction metrics
-migration_plan.md
-rollout guidance
-regression_testing_plan.md
-how to validate correctness
-insights.md
-key findings and improvements
-Demo 2: Human-in-the-loop run
-Show:
-one ambiguous flow in output
-sample expert JSON file
-rerun pipeline using that file
-show changed output
-Best example
-Use one QM_ONLY_MATCH or MULTI_CANDIDATE flow.
-How to make this easy for judges
-In the repo, include:
-Plain text
-demo/
-├── demo_steps.md
-├── screenshots/
-│   ├── 01_input_file.png
-│   ├── 02_run_command.png
-│   ├── 03_outputs_generated.png
-│   ├── 04_explanation_report.png
-│   ├── 05_expert_override_json.png
-│   └── 06_output_after_override.png
-What to put in demo_steps.md
-You can use this:
-Demo Steps
-Scenario 1: Automated topology transformation
-Open config.yaml
-Confirm input CSV path
-Run python run_pipeline.py
-Review generated outputs in artifacts/output/
-Scenario 2: Expert override for ambiguous flow
-Open config/expert_decisions.sample.json
-Add or update the file path in config
-Re-run the pipeline
-Compare target output and explanation report before and after override
-Important recommendation
-Even if your current code reads expert decisions from YAML, still provide a sample file in the repo.
-Because judges need:
-format
-example
-usability
-Without that, they have to guess.
-Final answer
-Yes — you should absolutely save a sample expert decision file in the repository.
-Otherwise judges won’t know:
-what the JSON structure is
-how to use it
-what fields are supported
-Minimum required
-expert_decisions.empty.json
-expert_decisions.sample.json
-one README section explaining the structure
-If you want, I can generate the exact contents for:
-demo_steps.md
-expert_decisions.sample.json
-config.yaml in final paste-ready form.
-
-
-+*+++++++---
-Here’s a clear, beginner-friendly explanation of each field in the expert override JSON. You can paste this directly into your README.
-🧾 Expert Override JSON – Field Explanation
-📌 Structure
-JSON
-{
-  "FLOW_ID": {
-    "target_producer_qm": "...",
-    "target_consumer_qm": "...",
-    "manual_review": false,
-    "exclude_from_target": false,
-    "reason": "..."
-  }
-}
-🔑 Top-Level Key
-FLOW_ID
-Plain text
-Format: <producer_app>-><consumer_app>
-Example
-Plain text
-8A->OK
+Perfect — this is exactly what will make your demo stand out.
+You should include a “Flow Status Guide” section in your demo so judges instantly understand what each status means.
+Below is a clean, crisp, paste-ready section for your DEMO or README.
+🎯 Flow Status Guide (How to Read the Output)
+Each flow in the system is assigned a final status to indicate its readiness and reliability in the target topology.
+✅ 1. approved
 Meaning
-Represents one producer → consumer flow
-Must match exactly what you see in:
-explanation_report.csv
-data_quality_issues_report.csv
-🧠 Fields Inside Each Flow
-1. target_producer_qm
-JSON
-"target_producer_qm": "QM_8A"
+Fully validated and automatically accepted
+No ambiguity or missing information
+When it happens
+INDIRECT_COMPLETE
+LOCAL_COMPLETE
+Action
+✔ Included in target
+✔ No manual intervention required
+⚠️ 2. needs_review
 Meaning
-The final Queue Manager assigned to the producer application
-Must follow canonical rule:
+Flow is usable but not fully confirmed
+Requires human validation
+When it happens
+QM_ONLY_MATCH
+QUEUE_ONLY_MATCH (if allowed)
+Action
+✔ Included in target
+⚠ Should be reviewed using expert override JSON
+❌ 3. excluded
+Meaning
+Flow is not reliable enough to include in target
+When it happens
+MULTI_CANDIDATE
+ORPHAN
+UNRESOLVED
+Action
+❌ Not included in target topology
+⚠ Can be manually included using expert override
+🧠 Resolution Status vs Final Status
+Resolution Status
+Final Status
+Meaning
+INDIRECT_COMPLETE
+approved
+Fully validated
+LOCAL_COMPLETE
+approved
+Same QM, valid
+QM_ONLY_MATCH
+needs_review
+QM match only
+QUEUE_ONLY_MATCH
+needs_review / excluded
+Weak mapping
+MULTI_CANDIDATE
+excluded
+Multiple possibilities
+ORPHAN
+excluded
+No valid path
+📌 Example
 Plain text
-QM_<PRODUCER_APP>
-Why it matters
-Enforces one QM per application
-Overrides incorrect or ambiguous AS-IS mapping
-2. target_consumer_qm
-JSON
-"target_consumer_qm": "QM_OK"
-Meaning
-The final Queue Manager assigned to the consumer application
-Must follow:
-Plain text
-QM_<CONSUMER_APP>
-Why it matters
-Ensures consumer reads from its own local QM
-Removes dependency on legacy routing QMs (like WQ26)
-3. manual_review
-JSON
-"manual_review": false
-Meaning
-Indicates whether the flow still needs human validation
-Values
-Value
-Meaning
-true
-Still needs review
-false
-Approved by expert
-Important
-If set to false, flow becomes:
-Plain text
-final_status = approved
-4. exclude_from_target
-JSON
-"exclude_from_target": false
-Meaning
-Controls whether the flow should be included in the target topology
-Values
-Value
-Meaning
-false
-Include in target
-true
-Exclude completely
-Use cases
-true → invalid / duplicate / irrelevant flow
-false → valid business flow
-5. reason
-JSON
-"reason": "QM-level linkage confirmed from full dataset"
-Meaning
-Human-readable explanation of the decision
-Why it matters
-Improves explainability
-Helps judges understand:
-why override was needed
-what logic was applied
-🎯 Example Explained
-JSON
-{
-  "8A->OK": {
-    "target_producer_qm": "QM_8A",
-    "target_consumer_qm": "QM_OK",
-    "manual_review": false,
-    "exclude_from_target": false,
-    "reason": "QM-level linkage confirmed from full dataset; canonical ownership applied."
-  }
-}
+Flow ID: 8A->OK
+Resolution Status: QM_ONLY_MATCH
+Final Status: needs_review
 Interpretation
-Flow: 8A → OK
-Include in target ✔
-Assign:
-Producer QM → QM_8A
-Consumer QM → QM_OK
-No further review needed ✔
-Decision is justified ✔
-⚠️ What NOT to do
-❌ Do not use legacy QMs:
+Consumer exists on routing QM ✔
+Queue mismatch ❌
+Included in target ✔
+Needs expert validation ⚠
+🔄 After Expert Override
 JSON
-"WQ26"   // ❌ wrong
-✔ Always use canonical:
-JSON
-"QM_8A"
-"QM_OK"
-🧠 One-Line Summary
-The expert JSON allows manual override of automated decisions by explicitly defining target QMs, inclusion/exclusion, and approval status for each flow.
-If you want, I can also generate: 👉 a visual example (before vs after override)
-👉 or a demo walkthrough script for presentation
+{
+  "8A->OK": {
+    "manual_review": false,
+    "exclude_from_target": false
+  }
+}
+Result
+Plain text
+Final Status → approved
+🎯 Why This Matters
+This classification ensures:
+✔ Correct flows are not wrongly excluded
+✔ Ambiguous flows are not blindly accepted
+✔ Human validation is supported where needed
+✔ Full transparency for every decision
+🚀 One-Line Summary
+Flows are classified as approved, needs_review, or excluded to balance automation accuracy with controlled human validation.
+💡 Pro Tip (for demo)
+When presenting:
+👉 Show one flow moving like this:
+Plain text
+QM_ONLY_MATCH → needs_review → (after JSON) → approved
+That single example will clearly demonstrate:
+automation
+ambiguity handling
+human-in-the-loop
+If you want, I can also give: 👉 a visual slide version (very powerful for judging)
+👉 or a script you can speak during demo in 60 seconds
